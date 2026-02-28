@@ -141,7 +141,7 @@ Separating them early avoids coupling and makes it much easier later when you:
 curl -sSL https://get.BannKenn.sh/agent | bash
 
 # Server + Dashboard (Docker Compose)
-git clone https://github.com/yourname/BannKenn
+git clone https://github.com/OpenTech-Lab/bannkenn
 cd BannKenn
 docker compose up -d
 ```
