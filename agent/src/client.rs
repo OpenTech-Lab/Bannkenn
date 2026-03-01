@@ -1,6 +1,19 @@
 use anyhow::Result;
 use reqwest::Client as HttpClient;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+/// Mirror of the server's DecisionRow for deserialization
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecisionRow {
+    pub id: i64,
+    pub ip: String,
+    pub reason: String,
+    pub action: String,
+    pub source: String,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+}
 
 /// API client for communicating with the BannKenn server
 pub struct ApiClient {
@@ -17,6 +30,29 @@ impl ApiClient {
             token,
             http: HttpClient::new(),
         }
+    }
+
+    /// Fetch decisions with id > since_id in ascending order (for sync)
+    pub async fn fetch_decisions_since(&self, since_id: i64) -> Result<Vec<DecisionRow>> {
+        let url = format!(
+            "{}/api/v1/decisions?since_id={}",
+            self.base_url, since_id
+        );
+
+        let response = self.http.get(&url).send().await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Server returned error {} fetching decisions: {}",
+                status,
+                text
+            ));
+        }
+
+        let rows: Vec<DecisionRow> = response.json().await?;
+        Ok(rows)
     }
 
     /// Report a block decision to the server
@@ -49,6 +85,31 @@ impl ApiClient {
         }
 
         tracing::debug!("Successfully reported decision for IP {}", ip);
+        Ok(())
+    }
+
+    /// Send heartbeat so server can mark this agent as online
+    pub async fn send_heartbeat(&self) -> Result<()> {
+        let url = format!("{}/api/v1/agents/heartbeat", self.base_url);
+
+        let response = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Server returned heartbeat error {}: {}",
+                status,
+                text
+            ));
+        }
+
+        tracing::debug!("Heartbeat sent successfully");
         Ok(())
     }
 }

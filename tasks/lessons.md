@@ -42,3 +42,8 @@
 - If installer output tells users to run `systemctl start <service>`, the installer must have created and enabled that unit in the same execution path
 - Add explicit verification for post-install claims (e.g., service unit presence) before considering installer changes done
 - Keep runtime identity consistent: if the service runs as root (firewall operations), initialization instructions and config path must target root context
+
+### Agent liveness must use explicit heartbeats
+- Inferring agent health from decision traffic is incorrect because healthy agents may have no block events
+- Track liveness with dedicated heartbeat writes from agent to server on a fixed interval
+- Dashboard status should derive from heartbeat freshness windows, not decision table activity

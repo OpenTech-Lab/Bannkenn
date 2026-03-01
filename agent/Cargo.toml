@@ -21,3 +21,4 @@ thiserror = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 regex = "1"
 dirs = "5"
+uuid = { version = "1", features = ["v4"] }

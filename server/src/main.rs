@@ -6,7 +6,7 @@ mod routes;
 
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{get, patch, post},
     Router,
 };
 use config::ServerConfig;
@@ -47,12 +47,6 @@ async fn main() -> anyhow::Result<()> {
     feeds::start_feed_task(db.clone()).await;
     info!("Feed task started");
 
-    // Build the router
-    let app_state = AppState {
-        db: db.clone(),
-        config: config.clone(),
-    };
-
     let auth_config = auth::AuthConfig {
         jwt_secret: config.jwt_secret.clone(),
     };
@@ -60,21 +54,36 @@ async fn main() -> anyhow::Result<()> {
     // Health endpoint (no auth required)
     let health_route = get(routes::health::health);
 
-    // Agent registration (no auth required)
-    let agents_register_route = post(routes::agents::register).with_state(Arc::new(
-        routes::agents::AppState {
-            db: db.clone(),
-            jwt_secret: config.jwt_secret.clone(),
-        },
-    ));
-
     // Auth middleware (protects POST /decisions only)
     let auth_middleware_layer = middleware::from_fn_with_state(
         Arc::new(auth_config),
         auth::auth_middleware,
     );
 
+    // Agent registration/listing is public; heartbeat is protected
+    let agents_state = Arc::new(routes::agents::AppState {
+        db: db.clone(),
+        jwt_secret: config.jwt_secret.clone(),
+    });
+    let agents_public_router = Router::new()
+        .route("/", get(routes::agents::list))
+        .route("/register", post(routes::agents::register))
+        .with_state(agents_state.clone());
+
+    let agents_protected_router = Router::new()
+        .route("/heartbeat", post(routes::agents::heartbeat))
+        .with_state(agents_state.clone())
+        .layer(auth_middleware_layer.clone());
+
+    let agents_admin_router = Router::new()
+        .route(
+            "/:id",
+            patch(routes::agents::update_nickname).delete(routes::agents::delete_agent),
+        )
+        .with_state(agents_state);
+
     let decisions_state = Arc::new(routes::decisions::AppState { db: db.clone() });
+    let community_state = Arc::new(routes::community::AppState { db: db.clone() });
 
     // Public: GET /api/v1/decisions
     let decisions_read = Router::new()
@@ -90,8 +99,14 @@ async fn main() -> anyhow::Result<()> {
     // Combine all routes
     let router = Router::new()
         .route("/api/v1/health", health_route)
-        .route("/api/v1/agents/register", agents_register_route)
+        .nest(
+            "/api/v1/agents",
+            agents_public_router
+                .merge(agents_protected_router)
+                .merge(agents_admin_router),
+        )
         .nest("/api/v1/decisions", decisions_read.merge(decisions_write))
+        .route("/api/v1/community/ips", get(routes::community::list_ips).with_state(community_state))
         .layer(TraceLayer::new_for_http());
 
     // Parse bind address

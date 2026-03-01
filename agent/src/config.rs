@@ -1,13 +1,19 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Agent configuration loaded from TOML file or defaults
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub server_url: String,
     pub jwt_token: String,
+    /// Registered name used when connecting to the server (defaults to hostname)
+    #[serde(default)]
+    pub agent_name: String,
+    /// Stable UUID for this agent instance; generated once during `init`
+    #[serde(default)]
+    pub uuid: String,
     #[serde(default = "default_log_path")]
     pub log_path: String,
     #[serde(default = "default_threshold")]
@@ -33,6 +39,8 @@ impl Default for AgentConfig {
         Self {
             server_url: String::new(),
             jwt_token: String::new(),
+            agent_name: String::new(),
+            uuid: String::new(),
             log_path: default_log_path(),
             threshold: default_threshold(),
             window_secs: default_window_secs(),
@@ -72,6 +80,38 @@ impl AgentConfig {
     fn config_path() -> Result<PathBuf> {
         let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not determine home directory"))?;
         Ok(home.join(".config/bannkenn/agent.toml"))
+    }
+}
+
+/// Persistent cursor tracking the last synced decision id
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SyncState {
+    pub last_synced_id: i64,
+}
+
+impl SyncState {
+    /// Load from `~/.config/bannkenn/sync_state.toml`, or return default if missing
+    pub fn load(path: &Path) -> Self {
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|content| toml::from_str(&content).ok())
+            .unwrap_or_default()
+    }
+
+    /// Persist to `path`
+    pub fn save(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let toml_string = toml::to_string_pretty(self)?;
+        fs::write(path, toml_string)?;
+        Ok(())
+    }
+
+    pub fn state_path() -> Result<PathBuf> {
+        let home =
+            dirs::home_dir().ok_or_else(|| anyhow!("Could not determine home directory"))?;
+        Ok(home.join(".config/bannkenn/sync_state.toml"))
     }
 }
 

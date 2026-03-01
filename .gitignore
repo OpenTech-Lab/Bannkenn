@@ -1,3 +1,7 @@
+# dashboard
+node_modules/
+.next/
+
 # Rust
 target/
 Cargo.lock

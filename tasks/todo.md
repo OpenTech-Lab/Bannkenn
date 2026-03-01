@@ -92,3 +92,92 @@
 - Updated post-install guidance to:
   - `sudo bannkenn-agent init`
   - `sudo systemctl start bannkenn-agent`
+
+## Phase 7 – Dashboard agent status + community IP page (Codex)
+- [x] Add server API to list agents with derived health/status
+- [x] Track decision source by authenticated agent name for future status accuracy
+- [x] Add dashboard API proxy for agents endpoint
+- [x] Update dashboard home page to show agent health/status
+- [x] Add new dashboard page to display community IP list entries
+- [x] Verify with `cargo check --workspace`; attempted `npm run lint` in dashboard (blocked: `next` not installed)
+
+## Review (Phase 7)
+- Added `GET /api/v1/agents` with derived status (`online` if last decision seen within 5 minutes; otherwise `offline`/`unknown`)
+- Added `GET /api/v1/community/ips` for community-feed-backed IP list aggregation
+- `POST /api/v1/decisions` now records `source` as authenticated agent name to make per-agent status meaningful
+- Dashboard home now fetches `/api/agents` and renders an `Agent Status` table + agent health stats
+- Added dashboard page `/community` that lists community IPs with source, sightings, and last seen
+- Added top navigation links in dashboard layout (`Home`, `Community IPs`)
+- Verification:
+  - `cargo check --workspace` passed
+  - `cargo check -p bannkenn-server` passed
+  - `npm run lint` failed in this environment because `next` binary is unavailable (dependencies not installed)
+
+## Phase 8 – Agent heartbeat for accurate status (Codex)
+- [x] Add server heartbeat storage + query plumbing
+- [x] Add authenticated heartbeat endpoint for agents
+- [x] Update agent status computation to use heartbeat timestamp
+- [x] Add periodic heartbeat sender in agent runtime
+- [x] Verify with `cargo check --workspace`
+
+## Review (Phase 8)
+- Added `agent_heartbeats` table migration and `upsert_agent_heartbeat(agent_name)` in DB layer
+- Added protected `POST /api/v1/agents/heartbeat` endpoint (JWT required; agent identity from token subject)
+- `GET /api/v1/agents` status now derives from heartbeat timestamp, not decision activity
+- Online threshold tightened to 2 minutes for heartbeat freshness
+- Agent runtime now sends heartbeat immediately on startup and every 30 seconds afterward
+- Verification: `cargo check --workspace` passes (existing unrelated warning in `agent/src/watcher.rs`)
+
+## Phase 9 – Auto token setup in agent init (Codex)
+- [x] Update `bannkenn-agent init` to auto-register agent and fetch JWT after server URL entry
+- [x] Keep manual JWT entry as fallback when auto-registration fails
+- [x] Update default server URL prompt to current server port
+- [x] Verify with `cargo check -p bannkenn-agent`
+
+## Review (Phase 9)
+- `bannkenn-agent init` now prompts for agent name and can auto-fetch JWT via `POST /api/v1/agents/register`
+- Added robust fallback: if auto-registration fails (or user says no), prompt for manual JWT token input
+- Default server URL updated from `http://localhost:8080` to `http://localhost:3022`
+- Added helper functions in agent init flow:
+  - `register_agent_and_get_token(server_url, agent_name)`
+  - `prompt_for_jwt_token(...)`
+- Verification: `cargo check -p bannkenn-agent` passes (existing unrelated warning in `watcher.rs`)
+
+## Phase 10 – Home recent decisions filter to blocked IPs only (Codex)
+- [x] Update home page Recent Decisions table to show only `action=block`
+- [x] De-duplicate by IP to show newest blocked IP entries
+- [x] Update empty-state copy for blocked-only table
+
+## Review (Phase 10)
+- `dashboard/app/page.tsx` now computes `recentBlockedByIp` from decisions:
+  - filters to block actions only
+  - keeps first (newest) entry per IP
+- Recent Decisions table now renders `recentBlockedByIp` instead of all decisions
+- Empty state text changed to `No blocked IPs yet`
+
+## Phase 11 – Exclude community feed items from home Recent Decisions (Codex)
+- [x] Filter out community feed sources in home blocked list
+
+## Review (Phase 11)
+- Home `Recent Decisions` now excludes entries where `source` ends with `_feed` (e.g. `ipsum_feed`)
+
+## Phase 12 – Exclude community feed from home stats (Codex)
+- [x] Update `Total decisions` to count non-feed decisions only
+- [x] Update `Blocked IPs` to count non-feed block decisions only
+
+## Review (Phase 12)
+- Home stats now use `localDecisions` (source not ending with `_feed`) for both total and blocked counters
+
+## Phase 13 – Agent init auto-detect log sources (Codex)
+- [x] Remove manual log path prompt from `bannkenn-agent init`
+- [x] Auto-discover host/docker/k8s/vm-mounted log candidates and print as a numbered list
+- [x] Auto-select a log path deterministically for `agent.toml` without user input
+- [x] Verify with `cargo check -p bannkenn-agent`
+
+## Review (Phase 13)
+- `agent/src/main.rs` `init()` no longer prompts for `Log file path`; it now runs automatic source discovery.
+- Added host log detection (`/var/log/auth.log`, `/var/log/secure`, `/var/log/syslog`, `/var/log/messages`).
+- Added container log discovery for Docker (`/var/lib/docker/containers/*/*-json.log`) and Kubernetes-style paths (`/var/log/containers`, `/var/log/pods`).
+- Added best-effort VM/external mount scanning from `/mnt`, `/media`, `/run/media`, and `/vmfs/volumes` for common auth/system log names when readable.
+- `init()` now prints discovered logs as a numbered list and auto-selects a primary path via explicit priority order.
+- Verification: `cargo check -p bannkenn-agent` passes (existing unrelated warning in `agent/src/watcher.rs` about unused `timestamp` field).
