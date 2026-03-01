@@ -85,6 +85,7 @@ fi
 step "Creating changelog: $CHANGELOG_FILE → ${TAG}.md"
 
 # Rename existing changelog if present
+PREV_TAG_FOR_RENAME=""
 if [[ -f "$CHANGELOG_FILE" ]]; then
     PREV_TAG_FOR_RENAME="$(git tag --sort=-version:refname | head -1 2>/dev/null || true)"
     if [[ -n "$PREV_TAG_FOR_RENAME" ]]; then
