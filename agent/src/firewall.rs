@@ -52,7 +52,7 @@ pub async fn block_ip(ip: &str, backend: &FirewallBackend) -> Result<()> {
 /// Block IP using nftables
 async fn block_ip_nftables(ip: &str) -> Result<()> {
     let output = Command::new("nft")
-        .args(&[
+        .args([
             "add",
             "element",
             "inet",
@@ -75,7 +75,7 @@ async fn block_ip_nftables(ip: &str) -> Result<()> {
 /// Block IP using iptables
 async fn block_ip_iptables(ip: &str) -> Result<()> {
     let output = Command::new("iptables")
-        .args(&["-I", "INPUT", "-s", ip, "-j", "DROP"])
+        .args(["-I", "INPUT", "-s", ip, "-j", "DROP"])
         .output()
         .await?;
 

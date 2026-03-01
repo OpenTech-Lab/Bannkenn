@@ -131,6 +131,8 @@ mod tests {
         let config = AgentConfig {
             server_url: "http://localhost:8080".to_string(),
             jwt_token: "token123".to_string(),
+            agent_name: "test-agent".to_string(),
+            uuid: "test-uuid".to_string(),
             log_path: "/var/log/auth.log".to_string(),
             threshold: 3,
             window_secs: 120,

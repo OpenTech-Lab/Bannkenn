@@ -55,7 +55,7 @@ pub async fn register(
         let mut token_bytes = [0u8; 32];
         rng.fill(&mut token_bytes);
         let mut hasher = Sha256::new();
-        hasher.update(&token_bytes);
+        hasher.update(token_bytes);
         format!("{:x}", hasher.finalize())
     };
 

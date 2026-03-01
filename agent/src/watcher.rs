@@ -100,9 +100,7 @@ async fn process_failed_attempt(
     let window = Duration::from_secs(config.window_secs);
 
     // Get or create entry for this IP
-    let attempts = ip_attempts
-        .entry(ip.to_string())
-        .or_insert_with(VecDeque::new);
+    let attempts = ip_attempts.entry(ip.to_string()).or_default();
 
     // Remove old attempts outside the window
     while let Some(&oldest) = attempts.front() {

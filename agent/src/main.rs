@@ -16,7 +16,6 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
-use tracing_subscriber;
 use uuid::Uuid;
 
 use crate::client::ApiClient;
@@ -122,9 +121,10 @@ async fn run() -> Result<()> {
 
     while let Some(event) = rx.recv().await {
         tracing::info!(
-            "Block event received: IP={}, reason={}",
+            "Block event received: IP={}, reason={}, at={}",
             event.ip,
-            event.reason
+            event.reason,
+            event.timestamp
         );
 
         match block_ip(&event.ip, &backend).await {
