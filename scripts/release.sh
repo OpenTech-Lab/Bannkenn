@@ -33,8 +33,10 @@ if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CHANGELOG_DIR="$REPO_ROOT/scripts"
+CHANGELOG_DIR="$REPO_ROOT/scripts/version"
 CHANGELOG_FILE="$CHANGELOG_DIR/changelog.md"
+
+mkdir -p "$CHANGELOG_DIR"
 
 # ── Pre-flight checks ─────────────────────────────────────────────────────────
 
