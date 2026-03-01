@@ -45,7 +45,10 @@ pub async fn sync_loop(client: ApiClient, known_blocked_ips: Arc<RwLock<HashMap<
                         Ok(_) => tracing::info!("sync: blocked IP {}", row.ip),
                         Err(e) => tracing::warn!("sync block failed for {}: {}", row.ip, e),
                     }
-                    known_blocked_ips.write().await.insert(row.ip.clone(), row.source.clone());
+                    known_blocked_ips
+                        .write()
+                        .await
+                        .insert(row.ip.clone(), row.source.clone());
                     state.last_synced_id = row.id;
                 }
 

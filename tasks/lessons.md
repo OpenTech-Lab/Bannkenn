@@ -51,3 +51,8 @@
 ### GeoIP backfill validation must be agent-scoped
 - After schema/backfill changes, verify specific affected agent rows (e.g., `/api/v1/agents/:id/decisions`) instead of only sampling global endpoints.
 - If a user reports stale/null values, add a targeted backfill path and return post-update sample values from DB to confirm write success.
+
+### Rustfmt CI must use pinned toolchain
+- Floating `stable` in GitHub Actions can diverge from local rustfmt behavior and cause recurring `cargo fmt --check` failures.
+- Pin a specific Rust toolchain version in workflow and mirror it with `rust-toolchain.toml`.
+- After changing workflow/toolchain, always re-run `cargo fmt --all -- --check` locally to catch formatting differences before push.

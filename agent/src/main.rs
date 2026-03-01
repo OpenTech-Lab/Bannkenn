@@ -183,7 +183,10 @@ async fn run() -> Result<()> {
                 Err(e) => tracing::warn!("Failed to report decision for IP {}: {}", event.ip, e),
             }
 
-            known_blocked_ips.write().await.insert(event.ip.clone(), "agent".to_string());
+            known_blocked_ips
+                .write()
+                .await
+                .insert(event.ip.clone(), "agent".to_string());
         } else if event.level == "listed" {
             // IP already in block list DB: enforce firewall block, do NOT create a new decision.
             match block_ip(&event.ip, &backend).await {
