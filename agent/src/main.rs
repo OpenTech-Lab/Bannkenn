@@ -104,14 +104,33 @@ async fn run() -> Result<()> {
 
     // Initial fetch: load all existing block-list IPs before starting the watcher
     // so detections are classified "listed" from the very first event.
+    // Also re-applies firewall rules so blocks survive agent/host restarts.
     let init_client = ApiClient::new(config.server_url.clone(), config.jwt_token.clone());
     match init_client.fetch_decisions_since(0).await {
         Ok(decisions) => {
-            let mut set = known_blocked_ips.write().await;
-            for d in &decisions {
-                set.insert(d.ip.clone(), d.source.clone());
+            let mut restored = 0u32;
+            let mut failed = 0u32;
+            {
+                let mut set = known_blocked_ips.write().await;
+                for d in &decisions {
+                    set.insert(d.ip.clone(), d.source.clone());
+                }
             }
-            tracing::info!("Loaded {} known blocked IP(s) from server", decisions.len());
+            for d in &decisions {
+                match block_ip(&d.ip, &backend).await {
+                    Ok(_) => restored += 1,
+                    Err(e) => {
+                        tracing::warn!("startup: failed to restore firewall block for {}: {}", d.ip, e);
+                        failed += 1;
+                    }
+                }
+            }
+            tracing::info!(
+                "Loaded {} known blocked IP(s) from server; restored {} firewall rule(s) ({} failed)",
+                decisions.len(),
+                restored,
+                failed
+            );
         }
         Err(e) => tracing::warn!("Failed to load initial block list: {}", e),
     }

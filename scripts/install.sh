@@ -107,8 +107,10 @@ main() {
 
     info ""
     info "Installation complete!"
-    info "Run 'sudo bannkenn-agent init' to configure the agent interactively."
-    info "Then start with: sudo systemctl start bannkenn-agent"
+    info "Next steps:"
+    info "  1. sudo bannkenn-agent init     — configure the agent (server URL, log paths, threshold)"
+    info "  2. sudo bannkenn-agent connect  — register with the dashboard and obtain a JWT token"
+    info "  3. sudo systemctl start bannkenn-agent"
 }
 
 main "$@"
