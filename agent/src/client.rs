@@ -34,10 +34,7 @@ impl ApiClient {
 
     /// Fetch decisions with id > since_id in ascending order (for sync)
     pub async fn fetch_decisions_since(&self, since_id: i64) -> Result<Vec<DecisionRow>> {
-        let url = format!(
-            "{}/api/v1/decisions?since_id={}",
-            self.base_url, since_id
-        );
+        let url = format!("{}/api/v1/decisions?since_id={}", self.base_url, since_id);
 
         let response = self.http.get(&url).send().await?;
 

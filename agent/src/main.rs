@@ -79,7 +79,8 @@ async fn run() -> Result<()> {
     tracing::info!("Monitoring log file: {}", config.log_path);
     tracing::info!(
         "Threshold: {} attempts in {} seconds",
-        config.threshold, config.window_secs
+        config.threshold,
+        config.window_secs
     );
 
     let backend = detect_backend();
@@ -390,7 +391,12 @@ fn collect_docker_container_logs(root: &str, out: &mut BTreeSet<String>) {
     }
 }
 
-fn collect_logs_from_tree(root: &str, max_depth: usize, max_files: usize, out: &mut BTreeSet<String>) {
+fn collect_logs_from_tree(
+    root: &str,
+    max_depth: usize,
+    max_files: usize,
+    out: &mut BTreeSet<String>,
+) {
     let root_path = Path::new(root);
     if !root_path.is_dir() {
         return;
