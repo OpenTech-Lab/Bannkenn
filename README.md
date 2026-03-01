@@ -45,15 +45,47 @@ curl http://localhost:3022/api/v1/health
 Open dashboard:
 - `http://localhost:3021`
 
-### 3. Build and install the agent binary (Linux/systemd path)
+### 3. Install agent binary (choose one)
+
+Option A: build from source (Linux/systemd path)
 
 ```bash
-sudo bash scripts/install.sh
+# download this repo
+git clone https://github.com/OpenTech-Lab/bannkenn
+
+# run installer
+sudo bash install.sh
+
 ```
 
 This installs:
 - binary: `/usr/local/bin/bannkenn-agent`
 - service: `bannkenn-agent.service` (enabled)
+
+Option B: install from GitHub Release URL (Linux x64 example)
+
+```bash
+VERSION=v1.0.4
+curl -fL "https://github.com/OpenTech-Lab/bannkenn/releases/download/${VERSION}/bannkenn-agent-linux-x64" -o bannkenn-agent
+chmod +x bannkenn-agent
+sudo mv bannkenn-agent /usr/local/bin/bannkenn-agent
+```
+
+Linux ARM64:
+
+```bash
+VERSION=v1.0.4
+curl -fL "https://github.com/OpenTech-Lab/bannkenn/releases/download/${VERSION}/bannkenn-agent-linux-arm64" -o bannkenn-agent
+chmod +x bannkenn-agent
+sudo mv bannkenn-agent /usr/local/bin/bannkenn-agent
+```
+
+Windows PowerShell:
+
+```powershell
+$version = "v1.0.4"
+Invoke-WebRequest -Uri "https://github.com/OpenTech-Lab/bannkenn/releases/download/$version/bannkenn-agent-windows-x64.exe" -OutFile "bannkenn-agent.exe"
+```
 
 ### 4. Initialize agent configuration
 
@@ -74,7 +106,21 @@ After registration succeeds, press `Ctrl+C` to return to shell.
 
 ### 6. Start the systemd service
 
+`nano /etc/systemd/system/bannkenn-agent.service`
+```yml
+[Unit]
+Description=BannKenn IPS Agent
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/bannkenn-agent
+Restart=on-failure
+RestartSec=5
+```
+
 ```bash
+sudo systemctl daemon-reload
 sudo systemctl enable --now bannkenn-agent
 ```
 
