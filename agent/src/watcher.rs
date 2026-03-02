@@ -226,9 +226,17 @@ async fn process_failed_attempt(
         "alert"
     };
 
+    // Block events show the final threshold; alert events show progress (e.g. "2/3")
+    // so logs and the dashboard can distinguish the two without ambiguity.
+    let reason = if level == "block" {
+        format!("{} (threshold: {})", raw.reason, effective)
+    } else {
+        format!("{} ({}/{})", raw.reason, attempts.len(), effective)
+    };
+
     let security_event = SecurityEvent {
         ip: raw.ip.clone(),
-        reason: format!("{} (threshold: {})", raw.reason, effective),
+        reason,
         level: level.to_string(),
         log_path: raw.log_path.clone(),
         attempts: attempts.len() as u32,

@@ -16,6 +16,7 @@ pub struct DecisionRow {
 }
 
 /// API client for communicating with the BannKenn server
+#[derive(Clone)]
 pub struct ApiClient {
     base_url: String,
     token: String,

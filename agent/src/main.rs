@@ -189,40 +189,67 @@ async fn run() -> Result<()> {
             event.timestamp
         );
 
-        match api_client
-            .report_telemetry(
-                &event.ip,
-                &event.reason,
-                &event.level,
-                Some(&event.log_path),
-            )
-            .await
-        {
-            Ok(_) => tracing::debug!("Telemetry sent: {} {}", event.level, event.ip),
-            Err(e) => tracing::warn!("Failed to report telemetry for IP {}: {}", event.ip, e),
-        }
-
-        if event.level == "block" {
-            // New block: enforce firewall, report decision (adds to DB), track in shared set.
-            match block_ip(&event.ip, &backend).await {
-                Ok(_) => tracing::info!("Successfully blocked IP: {}", event.ip),
-                Err(e) => tracing::error!("Failed to block IP {}: {}", event.ip, e),
+        match event.level.as_str() {
+            "block" => {
+                // Apply firewall IMMEDIATELY — before any network I/O.
+                match block_ip(&event.ip, &backend).await {
+                    Ok(_) => tracing::info!("Blocked IP: {}", event.ip),
+                    Err(e) => tracing::error!("Failed to block IP {}: {}", event.ip, e),
+                }
+                // Update shared set so watcher won't re-process this IP.
+                known_blocked_ips
+                    .write()
+                    .await
+                    .insert(event.ip.clone(), "agent".to_string());
+                // Fire-and-forget: report decision + telemetry without delaying the loop.
+                let client = api_client.clone();
+                let ev = event.clone();
+                tokio::spawn(async move {
+                    match client.report_decision(&ev.ip, &ev.reason).await {
+                        Ok(_) => tracing::info!("Reported decision for IP: {}", ev.ip),
+                        Err(e) => tracing::warn!("Failed to report decision for {}: {}", ev.ip, e),
+                    }
+                    match client
+                        .report_telemetry(&ev.ip, &ev.reason, &ev.level, Some(&ev.log_path))
+                        .await
+                    {
+                        Ok(_) => tracing::debug!("Telemetry sent: {} {}", ev.level, ev.ip),
+                        Err(e) => tracing::warn!("Failed to report telemetry for {}: {}", ev.ip, e),
+                    }
+                });
             }
-
-            match api_client.report_decision(&event.ip, &event.reason).await {
-                Ok(_) => tracing::info!("Successfully reported decision for IP: {}", event.ip),
-                Err(e) => tracing::warn!("Failed to report decision for IP {}: {}", event.ip, e),
+            "listed" => {
+                // IP already in block list DB: apply firewall IMMEDIATELY.
+                match block_ip(&event.ip, &backend).await {
+                    Ok(_) => tracing::info!("Listed IP blocked by firewall: {}", event.ip),
+                    Err(e) => tracing::error!("Failed to block listed IP {}: {}", event.ip, e),
+                }
+                // Fire-and-forget telemetry.
+                let client = api_client.clone();
+                let ev = event.clone();
+                tokio::spawn(async move {
+                    match client
+                        .report_telemetry(&ev.ip, &ev.reason, &ev.level, Some(&ev.log_path))
+                        .await
+                    {
+                        Ok(_) => tracing::debug!("Telemetry sent: {} {}", ev.level, ev.ip),
+                        Err(e) => tracing::warn!("Failed to report telemetry for {}: {}", ev.ip, e),
+                    }
+                });
             }
-
-            known_blocked_ips
-                .write()
-                .await
-                .insert(event.ip.clone(), "agent".to_string());
-        } else if event.level == "listed" {
-            // IP already in block list DB: enforce firewall block, do NOT create a new decision.
-            match block_ip(&event.ip, &backend).await {
-                Ok(_) => tracing::info!("Listed IP blocked by firewall: {}", event.ip),
-                Err(e) => tracing::error!("Failed to block listed IP {}: {}", event.ip, e),
+            _ => {
+                // Alert and other events: fire-and-forget telemetry.
+                let client = api_client.clone();
+                let ev = event.clone();
+                tokio::spawn(async move {
+                    match client
+                        .report_telemetry(&ev.ip, &ev.reason, &ev.level, Some(&ev.log_path))
+                        .await
+                    {
+                        Ok(_) => tracing::debug!("Telemetry sent: {} {}", ev.level, ev.ip),
+                        Err(e) => tracing::warn!("Failed to report telemetry for {}: {}", ev.ip, e),
+                    }
+                });
             }
         }
     }
