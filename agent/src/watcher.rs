@@ -1,6 +1,8 @@
+use crate::burst::BurstDetector;
 use crate::butterfly;
 use crate::config::AgentConfig;
 use crate::patterns::all_patterns;
+use crate::risk_level::HostRiskLevel;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, VecDeque};
@@ -62,11 +64,16 @@ pub async fn watch(
     // IPs already blocked — avoids re-reporting block action repeatedly.
     let mut already_blocked: HashMap<String, ()> = HashMap::new();
 
+    let mut burst_detector = BurstDetector::new();
+    let mut host_risk = HostRiskLevel::new();
+
     while let Some(raw) = raw_rx.recv().await {
         process_failed_attempt(
             &raw,
             &mut ip_attempts,
             &mut already_blocked,
+            &mut burst_detector,
+            &mut host_risk,
             &config,
             &tx,
             &known_blocked_ips,
@@ -169,21 +176,30 @@ async fn open_log_from_start(path: &str) -> Result<File> {
 }
 
 /// Record a failed attempt and emit alert/block telemetry.
-/// If the IP is already in `known_blocked_ips` (block list DB), emits `level=listed`
-/// and applies the block immediately without going through threshold counting.
+///
+/// Processing order:
+/// 1. Skip IPs already blocked this session.
+/// 2. IPs in the known block-list DB → emit `level=listed` immediately.
+/// 3. Burst detection (if enabled) → block immediately on rapid-fire hits.
+/// 4. Sliding window threshold (butterfly or static), optionally adjusted by
+///    the host risk level multiplier.
+#[allow(clippy::too_many_arguments)]
 async fn process_failed_attempt(
     raw: &RawDetection,
     ip_attempts: &mut HashMap<String, VecDeque<Instant>>,
     already_blocked: &mut HashMap<String, ()>,
+    burst_detector: &mut BurstDetector,
+    host_risk: &mut HostRiskLevel,
     config: &AgentConfig,
     tx: &mpsc::Sender<SecurityEvent>,
     known_blocked_ips: &Arc<RwLock<HashMap<String, String>>>,
 ) {
+    // Step 1: already blocked this session — skip silently.
     if already_blocked.contains_key(&raw.ip) {
         return;
     }
 
-    // IP is already in the block list DB — emit "listed" (with source name) and block immediately.
+    // Step 2: IP is in the block list DB — emit "listed" and block immediately.
     if let Some(source) = known_blocked_ips.read().await.get(&raw.ip).cloned() {
         let display = format_source(&source);
         let event = SecurityEvent {
@@ -200,6 +216,39 @@ async fn process_failed_attempt(
         return;
     }
 
+    // Step 3: Burst detection — block immediately if rapid-fire threshold is hit.
+    if let Some(burst_cfg) = config.burst.as_ref().filter(|c| c.enabled) {
+        if let Some(burst_count) = burst_detector.record(&raw.ip, &raw.reason, burst_cfg) {
+            let reason = format!(
+                "{} [burst: {} hits in {}s]",
+                raw.reason, burst_count, burst_cfg.window_secs
+            );
+            let event = SecurityEvent {
+                ip: raw.ip.clone(),
+                reason,
+                level: "block".to_string(),
+                log_path: raw.log_path.clone(),
+                attempts: burst_count as u32,
+                effective_threshold: burst_cfg.threshold,
+                timestamp: Utc::now(),
+            };
+            let _ = tx.send(event).await;
+
+            tracing::info!(
+                "Burst detected for IP {}: {} hits within {}s",
+                raw.ip,
+                burst_count,
+                burst_cfg.window_secs
+            );
+
+            burst_detector.clear_ip(&raw.ip);
+            host_risk.record_block();
+            already_blocked.insert(raw.ip.clone(), ());
+            return;
+        }
+    }
+
+    // Step 4: Sliding window threshold.
     let now = Instant::now();
     let window = Duration::from_secs(config.window_secs);
 
@@ -215,10 +264,16 @@ async fn process_failed_attempt(
 
     attempts.push_back(now);
 
-    let effective = match &config.butterfly_shield {
+    // Step 5: Compute base effective threshold (butterfly or static).
+    let mut effective = match &config.butterfly_shield {
         Some(cfg) if cfg.enabled => butterfly::effective_threshold(config.threshold, &raw.ip, cfg),
         _ => config.threshold,
     };
+
+    // Step 6: Apply host risk level multiplier (if enabled).
+    if let Some(risk_cfg) = config.risk_level.as_ref() {
+        effective = host_risk.apply(effective, risk_cfg);
+    }
 
     let level = if attempts.len() >= effective as usize {
         "block"
@@ -226,8 +281,7 @@ async fn process_failed_attempt(
         "alert"
     };
 
-    // Block events show the final threshold; alert events show progress (e.g. "2/3")
-    // so logs and the dashboard can distinguish the two without ambiguity.
+    // Block events show the final threshold; alert events show progress (e.g. "2/3").
     let reason = if level == "block" {
         format!("{} (threshold: {})", raw.reason, effective)
     } else {
@@ -254,6 +308,7 @@ async fn process_failed_attempt(
             effective
         );
 
+        host_risk.record_block();
         already_blocked.insert(raw.ip.clone(), ());
         ip_attempts.remove(&raw.ip);
     }

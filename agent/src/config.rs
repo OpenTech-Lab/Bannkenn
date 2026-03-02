@@ -1,4 +1,6 @@
+use crate::burst::BurstConfig;
 use crate::butterfly::ButterflyShieldConfig;
+use crate::risk_level::RiskLevelConfig;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -27,6 +29,14 @@ pub struct AgentConfig {
     /// When absent or `enabled = false`, the static `threshold` is used.
     #[serde(default)]
     pub butterfly_shield: Option<ButterflyShieldConfig>,
+    /// Optional burst detection configuration.
+    /// When absent or `enabled = false`, burst detection is disabled.
+    #[serde(default)]
+    pub burst: Option<BurstConfig>,
+    /// Optional host risk level configuration.
+    /// When absent or `enabled = false`, the threshold is not adjusted by history.
+    #[serde(default)]
+    pub risk_level: Option<RiskLevelConfig>,
 }
 
 fn default_log_path() -> String {
@@ -53,6 +63,8 @@ impl Default for AgentConfig {
             threshold: default_threshold(),
             window_secs: default_window_secs(),
             butterfly_shield: None,
+            burst: None,
+            risk_level: None,
         }
     }
 }
@@ -156,6 +168,8 @@ mod tests {
             threshold: 3,
             window_secs: 120,
             butterfly_shield: None,
+            burst: None,
+            risk_level: None,
         };
 
         let toml_str = toml::to_string(&config).unwrap();

@@ -1,8 +1,10 @@
+mod burst;
 mod butterfly;
 mod client;
 mod config;
 mod firewall;
 mod patterns;
+mod risk_level;
 mod sync;
 mod watcher;
 
@@ -333,6 +335,8 @@ async fn init() -> Result<()> {
         threshold,
         window_secs,
         butterfly_shield: None,
+        burst: None,
+        risk_level: None,
     };
 
     config.save()?;
