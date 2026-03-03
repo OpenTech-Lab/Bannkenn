@@ -230,6 +230,24 @@
   - `cargo check -p bannkenn-server` passed
   - `npm run build` in `dashboard/` passed (includes new dynamic route)
 
+## Phase 18 – SSH repeated connection close not escalating to block (Codex)
+- [x] Reproduce and identify why `SSH repeated connection close (2/3)` stays alert-only
+- [x] Implement escalation fix so strong SSH auth-failure-close signals block immediately
+- [x] Add/extend tests for new SSH escalation behavior
+- [x] Verify with `cargo test -p bannkenn-agent`
+
+## Review (Phase 18)
+- Root cause: `SSH repeated connection close` was treated as a normal sliding-window signal, so sparse scanner traffic often hovered at `2/3` and kept generating alert telemetry without reaching block.
+- Fix: added immediate-block classification for high-confidence SSH auth-failure-close reasons:
+  - `SSH repeated connection close`
+  - `SSH disconnected: too many auth failures`
+  - `SSH max auth attempts exceeded`
+- Implementation: `agent/src/watcher.rs`
+  - Added `is_immediate_block_signal(reason)` helper.
+  - In detection flow, after computing effective threshold, immediate-block reasons now emit `level=block`, trigger firewall path, and clear per-IP attempt state.
+- Added unit tests in `watcher.rs` for positive/negative reason matching.
+- Verification: `cargo test -p bannkenn-agent` passed (58/58 in lib and 58/58 in bin).
+
 ## Phase 16 – MMDB-based GeoIP/ASN enrichment + DB backfill (Codex)
 - [x] Add server-side GeoIP resolver using local MMDB files (`GeoLite2-Country.mmdb`, `GeoLite2-ASN.mmdb`)
 - [x] Extend `decisions` schema with `country` and `asn_org` columns (idempotent migration)

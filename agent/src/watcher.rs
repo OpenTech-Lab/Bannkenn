@@ -163,6 +163,14 @@ fn format_source(source: &str) -> String {
     }
 }
 
+/// Some SSH log patterns already indicate too many auth failures happened within
+/// a single connection/session. Treat them as immediate block signals.
+fn is_immediate_block_signal(reason: &str) -> bool {
+    reason == "SSH repeated connection close"
+        || reason == "SSH disconnected: too many auth failures"
+        || reason == "SSH max auth attempts exceeded"
+}
+
 /// Open log file and seek to the end (normal startup — skip existing content).
 async fn open_log_at_end(path: &str) -> Result<File> {
     let mut file = File::open(path).await?;
@@ -275,6 +283,32 @@ async fn process_failed_attempt(
         effective = host_risk.apply(effective, risk_cfg);
     }
 
+    if is_immediate_block_signal(&raw.reason) {
+        let reason = format!("{} (immediate block signal)", raw.reason);
+        let security_event = SecurityEvent {
+            ip: raw.ip.clone(),
+            reason,
+            level: "block".to_string(),
+            log_path: raw.log_path.clone(),
+            attempts: attempts.len() as u32,
+            effective_threshold: effective,
+            timestamp: Utc::now(),
+        };
+
+        let _ = tx.send(security_event).await;
+
+        tracing::info!(
+            "Immediate block signal for IP {}: reason='{}'",
+            raw.ip,
+            raw.reason
+        );
+
+        host_risk.record_block();
+        already_blocked.insert(raw.ip.clone(), ());
+        ip_attempts.remove(&raw.ip);
+        return;
+    }
+
     let level = if attempts.len() >= effective as usize {
         "block"
     } else {
@@ -311,5 +345,26 @@ async fn process_failed_attempt(
         host_risk.record_block();
         already_blocked.insert(raw.ip.clone(), ());
         ip_attempts.remove(&raw.ip);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_immediate_block_signal;
+
+    #[test]
+    fn immediate_block_signal_matches_ssh_close_patterns() {
+        assert!(is_immediate_block_signal("SSH repeated connection close"));
+        assert!(is_immediate_block_signal(
+            "SSH disconnected: too many auth failures"
+        ));
+        assert!(is_immediate_block_signal("SSH max auth attempts exceeded"));
+    }
+
+    #[test]
+    fn immediate_block_signal_does_not_match_normal_alert_patterns() {
+        assert!(!is_immediate_block_signal("Failed SSH password"));
+        assert!(!is_immediate_block_signal("Invalid SSH user"));
+        assert!(!is_immediate_block_signal("PAM authentication failure"));
     }
 }
