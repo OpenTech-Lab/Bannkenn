@@ -53,6 +53,12 @@ pub struct BurstDetector {
     attempts: HashMap<(String, String), VecDeque<Instant>>,
 }
 
+impl Default for BurstDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BurstDetector {
     pub fn new() -> Self {
         Self {

@@ -51,6 +51,12 @@ pub struct HostRiskLevel {
     block_timestamps: VecDeque<Instant>,
 }
 
+impl Default for HostRiskLevel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HostRiskLevel {
     pub fn new() -> Self {
         Self {
