@@ -128,8 +128,11 @@ async fn tail_log_path(log_path: String, tx: mpsc::Sender<RawDetection>) -> Resu
                     file_pos = file.seek(std::io::SeekFrom::Current(0)).await?;
 
                     for line in buffer.lines() {
+                        // Unwrap Docker json-file log envelope if present so
+                        // patterns match the actual log content inside it.
+                        let effective_line = extract_log_line(line);
                         for pattern in &patterns {
-                            if let Some(caps) = pattern.regex.captures(line) {
+                            if let Some(caps) = pattern.regex.captures(effective_line.as_ref()) {
                                 if let Some(m) = caps.get(1) {
                                     let _ = tx
                                         .send(RawDetection {
@@ -169,6 +172,36 @@ fn is_immediate_block_signal(reason: &str) -> bool {
     reason == "SSH repeated connection close"
         || reason == "SSH disconnected: too many auth failures"
         || reason == "SSH max auth attempts exceeded"
+}
+
+/// Extract the effective log content from a raw line read off disk.
+///
+/// When a service (nginx, sshd, any daemon) runs inside a **Docker container**
+/// with the default `json-file` logging driver, Docker wraps every stdout/
+/// stderr line in a JSON envelope before writing it to:
+///   /var/lib/docker/containers/<id>/<id>-json.log
+///
+/// Each line looks like:
+///   {"log":"<JSON-escaped original line>\n","stream":"stdout","time":"..."}
+///
+/// The agent is configured to tail that host-side path. Without this function
+/// the patterns would never match because they see the JSON envelope, not the
+/// actual nginx / sshd log text inside it.
+///
+/// For every other log format (plain text on bare-metal, VM, or bind-mounted
+/// files) the function returns the line unchanged, so it is safe to call on
+/// every line regardless of where the log comes from.
+fn extract_log_line(line: &str) -> std::borrow::Cow<str> {
+    // Fast path: Docker JSON log lines always start with {"log":
+    if line.starts_with(r#"{"log":"#) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(s) = val.get("log").and_then(|v| v.as_str()) {
+                // Docker always appends a trailing \n inside the JSON string.
+                return std::borrow::Cow::Owned(s.trim_end_matches('\n').to_string());
+            }
+        }
+    }
+    std::borrow::Cow::Borrowed(line)
 }
 
 /// Open log file and seek to the end (normal startup — skip existing content).
@@ -350,7 +383,7 @@ async fn process_failed_attempt(
 
 #[cfg(test)]
 mod tests {
-    use super::is_immediate_block_signal;
+    use super::{extract_log_line, is_immediate_block_signal};
 
     #[test]
     fn immediate_block_signal_matches_ssh_close_patterns() {
@@ -366,5 +399,41 @@ mod tests {
         assert!(!is_immediate_block_signal("Failed SSH password"));
         assert!(!is_immediate_block_signal("Invalid SSH user"));
         assert!(!is_immediate_block_signal("PAM authentication failure"));
+    }
+
+    // ── Docker json-file log unwrapping ──────────────────────────────────────
+
+    #[test]
+    fn extract_log_line_unwraps_docker_json_envelope() {
+        // Exact format written by Docker's json-file logging driver.
+        let raw = r#"{"log":"89.248.168.239 - - [05/Mar/2026:02:18:53 +0000] \"POST /wp-content/plugins/dzs-videogallery/class_parts/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php HTTP/1.1\" 444 0 \"-\" \"Mozilla/5.0\"\n","stream":"stdout","time":"2026-03-05T02:18:53.123456789Z"}"#;
+        let result = extract_log_line(raw);
+        assert_eq!(
+            result.as_ref(),
+            r#"89.248.168.239 - - [05/Mar/2026:02:18:53 +0000] "POST /wp-content/plugins/dzs-videogallery/class_parts/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php HTTP/1.1" 444 0 "-" "Mozilla/5.0""#,
+            "should unescape JSON and strip trailing newline"
+        );
+    }
+
+    #[test]
+    fn extract_log_line_passes_through_plain_text() {
+        let plain = r#"89.248.168.239 - - [05/Mar/2026:02:18:53 +0000] "GET / HTTP/1.1" 200 1024"#;
+        let result = extract_log_line(plain);
+        assert_eq!(result.as_ref(), plain, "plain lines must pass through unchanged");
+    }
+
+    #[test]
+    fn extract_log_line_passes_through_syslog_style() {
+        let syslog = "Mar  5 02:18:53 host sshd[1234]: Failed password for root from 1.2.3.4 port 22 ssh2";
+        let result = extract_log_line(syslog);
+        assert_eq!(result.as_ref(), syslog);
+    }
+
+    #[test]
+    fn extract_log_line_unwraps_docker_stderr() {
+        // stderr stream — same envelope, different stream field
+        let raw = r#"{"log":"2026/03/05 02:18:53 [error] 12#0: *1 connect() failed\n","stream":"stderr","time":"2026-03-05T02:18:53.000000000Z"}"#;
+        let result = extract_log_line(raw);
+        assert_eq!(result.as_ref(), "2026/03/05 02:18:53 [error] 12#0: *1 connect() failed");
     }
 }

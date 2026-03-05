@@ -66,6 +66,49 @@ pub fn patterns() -> Result<Vec<DetectionPattern>> {
             )?,
             reason: "Web ModSecurity critical rule match",
         },
+        // ── nginx / Apache combined access log patterns ───────────────────────
+        // These match the standard Combined Log Format:
+        //   IP - USER [timestamp] "METHOD /path HTTP/x.x" STATUS BYTES "REF" "UA"
+        // The attacker IP is always capture group 1 (start of line).
+        //
+        // PHPUnit eval-stdin.php — WordPress plugin RCE probe
+        // Attack: POST /wp-content/plugins/*/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php
+        // MITRE ATT&CK: T1190 (Exploit Public-Facing Application)
+        DetectionPattern {
+            regex: Regex::new(
+                r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "[A-Z]+ [^"]*eval-stdin\.php"#,
+            )?,
+            reason: "Web WordPress phpunit eval-stdin.php RCE probe",
+        },
+        // WordPress wp-content plugin/theme exploit path scan (broader catch for
+        // phpunit, vendor, and other framework files embedded in plugins/themes)
+        DetectionPattern {
+            regex: Regex::new(
+                r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "[A-Z]+ /wp-content/[^"]*(?:phpunit|vendor/[^"]*\.php|eval)[^"]*""#,
+            )?,
+            reason: "Web WordPress plugin/theme exploit path scan",
+        },
+        // Webshell probe — classic PHP webshell filenames
+        DetectionPattern {
+            regex: Regex::new(
+                r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "[A-Z]+ [^"]*(?:c99|r57|b374k|webshell|shell|cmd|wso)\.php"#,
+            )?,
+            reason: "Web PHP webshell probe",
+        },
+        // Sensitive file disclosure probe (.env, wp-config.php, .git, /etc/passwd …)
+        DetectionPattern {
+            regex: Regex::new(
+                r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "GET [^"]*(?:\.env|wp-config\.php|/\.git/|/\.svn/|/etc/passwd|/etc/shadow|/proc/self)"#,
+            )?,
+            reason: "Web sensitive file disclosure probe",
+        },
+        // PHP code-injection via query string (?cmd=, ?exec=, ?system=, …)
+        DetectionPattern {
+            regex: Regex::new(
+                r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "[A-Z]+ [^"]*\?(?:cmd|exec|system|passthru|eval|shell_exec)="#,
+            )?,
+            reason: "Web PHP code injection via query string",
+        },
     ])
 }
 
@@ -133,6 +176,79 @@ mod tests {
         assert_eq!(
             re.captures(line).unwrap().get(1).unwrap().as_str(),
             "192.0.2.111"
+        );
+    }
+
+    // ── nginx access log pattern tests ───────────────────────────────────────
+
+    #[test]
+    fn test_nginx_access_phpunit_eval_stdin() {
+        let re = Regex::new(
+            r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "[A-Z]+ [^"]*eval-stdin\.php"#,
+        )
+        .unwrap();
+
+        // Exact format seen in the wild (from user report)
+        let line = r#"89.248.168.239 - - [05/Mar/2026:02:18:53 +0000] "POST /wp-content/plugins/dzs-videogallery/class_parts/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php HTTP/1.1" 444 0 "-" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36" rt=0.000"#;
+        assert_eq!(
+            re.captures(line).unwrap().get(1).unwrap().as_str(),
+            "89.248.168.239"
+        );
+    }
+
+    #[test]
+    fn test_nginx_access_wp_plugin_phpunit_path() {
+        let re = Regex::new(
+            r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "[A-Z]+ /wp-content/[^"]*(?:phpunit|vendor/[^"]*\.php|eval)[^"]*""#,
+        )
+        .unwrap();
+
+        let line = r#"89.248.168.239 - - [05/Mar/2026:02:18:56 +0000] "POST /wp-content/plugins/developer/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php HTTP/1.1" 444 0 "-" "Mozilla/5.0" rt=0.000"#;
+        assert_eq!(
+            re.captures(line).unwrap().get(1).unwrap().as_str(),
+            "89.248.168.239"
+        );
+    }
+
+    #[test]
+    fn test_nginx_access_webshell_probe() {
+        let re = Regex::new(
+            r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "[A-Z]+ [^"]*(?:c99|r57|b374k|webshell|shell|cmd|wso)\.php"#,
+        )
+        .unwrap();
+
+        let line = r#"203.0.113.5 - - [05/Mar/2026:03:00:00 +0000] "GET /uploads/shell.php HTTP/1.1" 404 0 "-" "python-requests/2.28" rt=0.000"#;
+        assert_eq!(
+            re.captures(line).unwrap().get(1).unwrap().as_str(),
+            "203.0.113.5"
+        );
+    }
+
+    #[test]
+    fn test_nginx_access_sensitive_file_probe() {
+        let re = Regex::new(
+            r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "GET [^"]*(?:\.env|wp-config\.php|/\.git/|/\.svn/|/etc/passwd|/etc/shadow|/proc/self)"#,
+        )
+        .unwrap();
+
+        let line = r#"198.51.100.9 - - [05/Mar/2026:04:11:22 +0000] "GET /.env HTTP/1.1" 200 512 "-" "curl/7.88.1" rt=0.001"#;
+        assert_eq!(
+            re.captures(line).unwrap().get(1).unwrap().as_str(),
+            "198.51.100.9"
+        );
+    }
+
+    #[test]
+    fn test_nginx_access_php_code_injection_query() {
+        let re = Regex::new(
+            r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "[A-Z]+ [^"]*\?(?:cmd|exec|system|passthru|eval|shell_exec)="#,
+        )
+        .unwrap();
+
+        let line = r#"192.0.2.77 - - [05/Mar/2026:05:00:01 +0000] "GET /index.php?cmd=whoami HTTP/1.1" 200 23 "-" "curl/7.88" rt=0.002"#;
+        assert_eq!(
+            re.captures(line).unwrap().get(1).unwrap().as_str(),
+            "192.0.2.77"
         );
     }
 }
