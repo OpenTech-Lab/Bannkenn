@@ -419,12 +419,17 @@ mod tests {
     fn extract_log_line_passes_through_plain_text() {
         let plain = r#"89.248.168.239 - - [05/Mar/2026:02:18:53 +0000] "GET / HTTP/1.1" 200 1024"#;
         let result = extract_log_line(plain);
-        assert_eq!(result.as_ref(), plain, "plain lines must pass through unchanged");
+        assert_eq!(
+            result.as_ref(),
+            plain,
+            "plain lines must pass through unchanged"
+        );
     }
 
     #[test]
     fn extract_log_line_passes_through_syslog_style() {
-        let syslog = "Mar  5 02:18:53 host sshd[1234]: Failed password for root from 1.2.3.4 port 22 ssh2";
+        let syslog =
+            "Mar  5 02:18:53 host sshd[1234]: Failed password for root from 1.2.3.4 port 22 ssh2";
         let result = extract_log_line(syslog);
         assert_eq!(result.as_ref(), syslog);
     }
@@ -434,6 +439,9 @@ mod tests {
         // stderr stream — same envelope, different stream field
         let raw = r#"{"log":"2026/03/05 02:18:53 [error] 12#0: *1 connect() failed\n","stream":"stderr","time":"2026-03-05T02:18:53.000000000Z"}"#;
         let result = extract_log_line(raw);
-        assert_eq!(result.as_ref(), "2026/03/05 02:18:53 [error] 12#0: *1 connect() failed");
+        assert_eq!(
+            result.as_ref(),
+            "2026/03/05 02:18:53 [error] 12#0: *1 connect() failed"
+        );
     }
 }
