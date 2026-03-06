@@ -283,6 +283,8 @@ async fn process_failed_attempt(
             );
 
             burst_detector.clear_ip(&raw.ip);
+            // Also clear the sliding-window state so stale entries don't accumulate.
+            ip_attempts.remove(&raw.ip);
             host_risk.record_block();
             already_blocked.insert(raw.ip.clone(), ());
             return;
@@ -290,8 +292,22 @@ async fn process_failed_attempt(
     }
 
     // Step 4: Sliding window threshold.
+    //
+    // Guard: treat window_secs=0 as a fatal misconfiguration rather than
+    // silently evicting every entry (duration > ZERO is always true for any
+    // non-zero elapsed time, so the deque would be emptied on every call,
+    // keeping the count permanently at 1).
+    let window_secs = config.window_secs.max(10);
+    if config.window_secs < 10 {
+        tracing::warn!(
+            "window_secs={} is dangerously low (minimum enforced: 10s). \
+             Update your config to avoid the count always being stuck at 1.",
+            config.window_secs
+        );
+    }
+
     let now = Instant::now();
-    let window = Duration::from_secs(config.window_secs);
+    let window = Duration::from_secs(window_secs);
 
     let attempts = ip_attempts.entry(raw.ip.clone()).or_default();
 
@@ -305,9 +321,19 @@ async fn process_failed_attempt(
 
     attempts.push_back(now);
 
+    tracing::debug!(
+        "Sliding-window count for {}: {}/{} (window={}s)",
+        raw.ip,
+        attempts.len(),
+        config.threshold,
+        window_secs
+    );
+
     // Step 5: Compute base effective threshold (butterfly or static).
     let mut effective = match &config.butterfly_shield {
-        Some(cfg) if cfg.enabled => butterfly::effective_threshold(config.threshold, &raw.ip, cfg),
+        Some(cfg) if cfg.enabled => {
+            butterfly::effective_threshold(config.threshold, &raw.ip, window_secs, cfg)
+        }
         _ => config.threshold,
     };
 

@@ -50,14 +50,27 @@ impl Default for ButterflyShieldConfig {
 
 /// Compute the effective block threshold for `ip` using the logistic-map.
 ///
-/// The seed is derived from the attacker IP and the current unix second,
-/// making the threshold unpredictable from the outside while staying
-/// deterministic within a single second (useful for testing via
-/// [`effective_threshold_with_seed`]).
+/// The seed is derived from the attacker IP and the current **window epoch**
+/// (`unix_sec / window_secs`), not the raw unix second.  This keeps the
+/// threshold **stable for the entire sliding window period**: all attempts
+/// from the same IP within one window bucket see the same threshold, so the
+/// comparison `attempts.len() >= effective` is consistent and blocking
+/// eventually triggers as expected.
+///
+/// Previously the seed used `unix_sec` directly, causing the threshold to
+/// change every second.  If the chaotic function happened to produce a high
+/// multiplier in consecutive seconds the effective threshold could remain
+/// permanently above the accumulated attempt count, silently preventing any
+/// block from firing.
 ///
 /// Returns at least 1 to avoid divide-by-zero or never-triggering logic.
-pub fn effective_threshold(base: u32, ip: &str, cfg: &ButterflyShieldConfig) -> u32 {
-    let seed = make_seed(ip);
+pub fn effective_threshold(
+    base: u32,
+    ip: &str,
+    window_secs: u64,
+    cfg: &ButterflyShieldConfig,
+) -> u32 {
+    let seed = make_seed(ip, window_secs);
     effective_threshold_with_seed(base, seed, cfg)
 }
 
@@ -83,13 +96,20 @@ pub fn effective_threshold_with_seed(base: u32, seed: f64, cfg: &ButterflyShield
     effective.max(1)
 }
 
-/// Build a normalised seed ∈ [0.0, 1.0) from `ip` and the current unix second.
-fn make_seed(ip: &str) -> f64 {
+/// Build a normalised seed ∈ [0.0, 1.0) from `ip` and the current window epoch.
+///
+/// The time component is `unix_sec / window_secs.max(1)`, which advances once
+/// per window period rather than once per second.  All attempts within the
+/// same window bucket therefore produce the same seed → same threshold →
+/// consistent `attempts >= threshold` comparison.
+fn make_seed(ip: &str, window_secs: u64) -> f64 {
     let unix_sec = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let key = format!("{}{}", ip, unix_sec);
+    // Quantise to the window period so the threshold is stable within one window.
+    let window_epoch = unix_sec / window_secs.max(1);
+    let key = format!("{}{}", ip, window_epoch);
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
     let h = hasher.finish();

@@ -48,6 +48,23 @@
 - Track liveness with dedicated heartbeat writes from agent to server on a fixed interval
 - Dashboard status should derive from heartbeat freshness windows, not decision table activity
 
+### Sliding-window `Duration::from_secs(0)` silently breaks counting
+- `Duration::from_secs(0)` = zero duration; `now.duration_since(oldest) > ZERO` is **always true** for any elapsed time
+- Result: every existing entry is evicted before `push_back`, so the deque is perpetually length-1 → count never grows → no block event is ever generated
+- Fix: enforce a minimum (e.g., `window_secs.max(10)`) and emit a `WARN` log when the configured value is suspiciously low
+- Symptom: dashboard shows repeated `(1/N)` for the same IP with the count never advancing
+
+### ButterflyShield seed must be window-aligned, not per-second
+- Using `unix_sec` (changes every second) as the seed makes the effective threshold shift every second
+- If the chaotic function produces a high multiplier in consecutive seconds, `attempts.len()` never catches `effective`; the block never fires
+- Fix: quantize seed time to the window period — `unix_sec / window_secs.max(1)` — so all attempts within one window bucket share the same threshold
+- Lesson: dynamic/chaotic thresholds must be stable across the detection window, not across arbitrary OS time units
+
+### Burst path must clean up `ip_attempts` for the blocked IP
+- When burst fires, the caller `return`s before reaching the `ip_attempts.push_back` step in the sliding-window path, BUT prior `ip_attempts` entries from earlier alerts are stale in the map
+- Although `already_blocked` prevents reuse, failing to remove the stale VecDeque wastes memory proportionally to attack volume
+- Fix: call `ip_attempts.remove(&raw.ip)` immediately after burst fires (alongside `burst_detector.clear_ip` and `already_blocked.insert`)
+
 ### GeoIP backfill validation must be agent-scoped
 - After schema/backfill changes, verify specific affected agent rows (e.g., `/api/v1/agents/:id/decisions`) instead of only sampling global endpoints.
 - If a user reports stale/null values, add a targeted backfill path and return post-update sample values from DB to confirm write success.
