@@ -90,6 +90,11 @@
 - "Agent syncs block decisions" and "agent merges server-computed risk with local risk" are different capabilities and need separate end-to-end verification
 - When both local and shared algorithms exist, compute them independently from the same base threshold and choose the more aggressive result explicitly instead of mixing intermediate state implicitly
 
+### Offline-capable agents need cached state and a durable outbox
+- Local scoring alone is not enough for disconnected operation; if the agent is expected to keep the "latest server picture", it must persist the last-known server-derived block knowledge and shared-risk snapshot to disk
+- If risky-access reporting must survive server outages, failed uploads cannot just be logged and dropped; queue them durably and replay them when connectivity returns
+- Verify offline behavior across both steady-state disconnects and restart-while-disconnected scenarios, because in-memory-only state hides restart regressions
+
 ### GeoIP backfill validation must be agent-scoped
 - After schema/backfill changes, verify specific affected agent rows (e.g., `/api/v1/agents/:id/decisions`) instead of only sampling global endpoints.
 - If a user reports stale/null values, add a targeted backfill path and return post-update sample values from DB to confirm write success.

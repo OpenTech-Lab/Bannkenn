@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # BannKenn Release Script
-# Usage: ./scripts/release.sh <version>
+# Usage: ./scripts/release.sh [version]
 # Example: ./scripts/release.sh 0.2.0
+# Example: ./scripts/release.sh        # bumps patch version, e.g. 1.0.1 -> 1.0.2
 
 set -euo pipefail
 
@@ -16,11 +17,30 @@ warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 step()  { echo -e "\n${CYAN}==>${NC} $*"; }
 
+increment_patch_version() {
+    local version="$1"
+
+    if ! [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+        error "Cannot auto-increment non-release version '$version'. Pass an explicit semver version."
+    fi
+
+    local major="${BASH_REMATCH[1]}"
+    local minor="${BASH_REMATCH[2]}"
+    local patch="${BASH_REMATCH[3]}"
+
+    printf '%s.%s.%s\n' "$major" "$minor" "$((patch + 1))"
+}
+
 # ── Validate input ────────────────────────────────────────────────────────────
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CARGO_TOML="$REPO_ROOT/Cargo.toml"
+CURRENT_VERSION="$(grep '^version' "$CARGO_TOML" | head -1 | sed 's/.*= *"\(.*\)"/\1/')"
 
 VERSION="${1:-}"
 if [[ -z "$VERSION" ]]; then
-    error "Usage: $0 <version>  (e.g. $0 0.2.0)"
+    VERSION="$(increment_patch_version "$CURRENT_VERSION")"
+    info "No version supplied; auto-incrementing patch version ${CURRENT_VERSION} → ${VERSION}"
 fi
 
 # Strip leading 'v' if supplied
@@ -32,7 +52,6 @@ if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
     error "Version must be semver format (e.g. 1.2.3 or 1.2.3-beta.1)"
 fi
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHANGELOG_DIR="$REPO_ROOT/scripts/version"
 CHANGELOG_FILE="$CHANGELOG_DIR/changelog.md"
 
@@ -68,9 +87,6 @@ info "Releasing $TAG from branch '$CURRENT_BRANCH'"
 # ── Update version in Cargo.toml ─────────────────────────────────────────────
 
 step "Updating version in Cargo.toml"
-
-CARGO_TOML="$REPO_ROOT/Cargo.toml"
-CURRENT_VERSION="$(grep '^version' "$CARGO_TOML" | head -1 | sed 's/.*= *"\(.*\)"/\1/')"
 
 if [[ "$CURRENT_VERSION" == "$VERSION" ]]; then
     info "Cargo.toml already at $VERSION, skipping."

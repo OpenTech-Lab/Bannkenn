@@ -6,6 +6,7 @@ mod config;
 mod event_risk;
 mod firewall;
 mod geoip;
+mod outbox;
 mod patterns;
 mod risk_level;
 mod shared_risk;
@@ -22,13 +23,14 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tokio::time::{interval, Duration};
 use uuid::Uuid;
 
 use crate::client::ApiClient;
-use crate::config::{default_runtime_campaign_config, AgentConfig};
+use crate::config::{default_runtime_campaign_config, AgentConfig, OfflineAgentState};
 use crate::firewall::{block_ip, detect_backend, init_firewall};
+use crate::outbox::{flush_pending, Outbox, OutboxPayload};
 use crate::shared_risk::SharedRiskSnapshot;
 use crate::watcher::{watch, BlockOutcome, SecurityEvent};
 
@@ -119,16 +121,42 @@ async fn run() -> Result<()> {
     }
 
     let api_client = ApiClient::new(config.server_url.clone(), config.jwt_token.clone());
+    let offline_state_path = OfflineAgentState::state_path()?;
+    let offline_state = OfflineAgentState::load(&offline_state_path);
 
     // Shared set of IPs already present in the server's block list DB.
     // Pre-populated at startup; kept in sync by sync_loop.
     // Maps IP → source name (e.g. "ipsum_feed", "agent") so that watcher can
     // report which database listed the IP when emitting level=listed events.
     let known_blocked_ips: Arc<RwLock<HashMap<String, String>>> =
-        Arc::new(RwLock::new(HashMap::new()));
+        Arc::new(RwLock::new(offline_state.known_blocked_ips.clone()));
     let enforced_blocked_ips: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
     let shared_risk_snapshot: Arc<RwLock<SharedRiskSnapshot>> =
-        Arc::new(RwLock::new(SharedRiskSnapshot::default()));
+        Arc::new(RwLock::new(offline_state.shared_risk_snapshot.clone()));
+
+    if !offline_state.known_blocked_ips.is_empty() {
+        let mut restored = 0u32;
+        let mut failed = 0u32;
+        for ip in offline_state.known_blocked_ips.keys() {
+            match block_ip(ip, &backend).await {
+                Ok(_) => {
+                    restored += 1;
+                    enforced_blocked_ips.write().await.insert(ip.clone());
+                }
+                Err(e) => {
+                    tracing::warn!("cache: failed to restore firewall block for {}: {}", ip, e);
+                    failed += 1;
+                }
+            }
+        }
+        tracing::info!(
+            "Loaded cached offline state: {} blocked IP(s), shared-risk categories={}, restored {} firewall rule(s) ({} failed)",
+            offline_state.known_blocked_ips.len(),
+            offline_state.shared_risk_snapshot.categories.len(),
+            restored,
+            failed
+        );
+    }
 
     // Initial fetch: load all existing block-list IPs before starting the watcher
     // so detections are classified "listed" from the very first event.
@@ -166,12 +194,23 @@ async fn run() -> Result<()> {
                 restored,
                 failed
             );
+            sync::persist_offline_state(&known_blocked_ips, &shared_risk_snapshot).await;
         }
         Err(e) => tracing::warn!("Failed to load initial block list: {}", e),
     }
 
+    match init_client.fetch_shared_risk_profile().await {
+        Ok(profile) => {
+            *shared_risk_snapshot.write().await = profile;
+            sync::persist_offline_state(&known_blocked_ips, &shared_risk_snapshot).await;
+        }
+        Err(e) => tracing::warn!("Failed to load initial shared-risk profile: {}", e),
+    }
+
     let (tx, mut rx) = mpsc::channel::<SecurityEvent>(1000);
     let (block_outcome_tx, block_outcome_rx) = mpsc::channel::<BlockOutcome>(1000);
+    let outbox = Arc::new(Mutex::new(Outbox::load_default()?));
+    let outbox_notify = Arc::new(Notify::new());
 
     let config_arc = Arc::new(config);
 
@@ -202,6 +241,34 @@ async fn run() -> Result<()> {
         Arc::clone(&shared_risk_snapshot),
         block_outcome_tx.clone(),
     ));
+
+    {
+        let pending = outbox.lock().await.len();
+        if pending > 0 {
+            tracing::info!("Loaded {} pending outbound report(s) from disk", pending);
+        }
+    }
+
+    let flush_client = api_client.clone();
+    let flush_outbox = Arc::clone(&outbox);
+    let flush_notify = Arc::clone(&outbox_notify);
+    tokio::spawn(async move {
+        let mut ticker = interval(Duration::from_secs(30));
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {}
+                _ = flush_notify.notified() => {}
+            }
+
+            match flush_pending(&flush_client, &flush_outbox, 200).await {
+                Ok(sent) if sent > 0 => {
+                    tracing::info!("Flushed {} queued outbound report(s)", sent)
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("Outbox flush failed: {}", e),
+            }
+        }
+    });
 
     let heartbeat_client =
         ApiClient::new(config_arc.server_url.clone(), config_arc.jwt_token.clone());
@@ -235,29 +302,23 @@ async fn run() -> Result<()> {
         match event.level.as_str() {
             "ssh_access" => {
                 // Successful SSH login — report to server for dashboard notification.
-                // No firewall action.
-                let client = api_client.clone();
-                let ev = event.clone();
-                tokio::spawn(async move {
-                    let username = ev.username.as_deref().unwrap_or("unknown");
-                    tracing::info!(
-                        "SSH access: user={} from={} log={}",
-                        username,
-                        ev.ip,
-                        ev.log_path
-                    );
-                    match client.report_ssh_login(&ev.ip, username).await {
-                        Ok(_) => {
-                            tracing::info!("SSH login reported: user={} from={}", username, ev.ip)
-                        }
-                        Err(e) => tracing::warn!(
-                            "Failed to report SSH login user={} from={}: {}",
-                            username,
-                            ev.ip,
-                            e
-                        ),
-                    }
-                });
+                // No firewall action. Persist first so it can be retried if the server is down.
+                let username = event.username.as_deref().unwrap_or("unknown");
+                tracing::info!(
+                    "SSH access: user={} from={} log={}",
+                    username,
+                    event.ip,
+                    event.log_path
+                );
+                enqueue_outbox(
+                    &outbox,
+                    OutboxPayload::SshLogin {
+                        ip: event.ip.clone(),
+                        username: username.to_string(),
+                    },
+                    &outbox_notify,
+                )
+                .await;
             }
             "block" => {
                 // Apply firewall IMMEDIATELY — before any network I/O.
@@ -281,22 +342,27 @@ async fn run() -> Result<()> {
                     .write()
                     .await
                     .insert(event.ip.clone(), "agent".to_string());
-                // Fire-and-forget: report decision + telemetry without delaying the loop.
-                let client = api_client.clone();
-                let ev = event.clone();
-                tokio::spawn(async move {
-                    match client.report_decision(&ev.ip, &ev.reason).await {
-                        Ok(_) => tracing::info!("Reported decision for IP: {}", ev.ip),
-                        Err(e) => tracing::warn!("Failed to report decision for {}: {}", ev.ip, e),
-                    }
-                    match client
-                        .report_telemetry(&ev.ip, &ev.reason, &ev.level, Some(&ev.log_path))
-                        .await
-                    {
-                        Ok(_) => tracing::debug!("Telemetry sent: {} {}", ev.level, ev.ip),
-                        Err(e) => tracing::warn!("Failed to report telemetry for {}: {}", ev.ip, e),
-                    }
-                });
+                sync::persist_offline_state(&known_blocked_ips, &shared_risk_snapshot).await;
+                enqueue_outbox(
+                    &outbox,
+                    OutboxPayload::Decision {
+                        ip: event.ip.clone(),
+                        reason: event.reason.clone(),
+                    },
+                    &outbox_notify,
+                )
+                .await;
+                enqueue_outbox(
+                    &outbox,
+                    OutboxPayload::Telemetry {
+                        ip: event.ip.clone(),
+                        reason: event.reason.clone(),
+                        level: event.level.clone(),
+                        log_path: Some(event.log_path.clone()),
+                    },
+                    &outbox_notify,
+                )
+                .await;
             }
             "listed" => {
                 // IP already in block list DB: apply firewall IMMEDIATELY.
@@ -315,32 +381,30 @@ async fn run() -> Result<()> {
                             .await;
                     }
                 }
-                // Fire-and-forget telemetry.
-                let client = api_client.clone();
-                let ev = event.clone();
-                tokio::spawn(async move {
-                    match client
-                        .report_telemetry(&ev.ip, &ev.reason, &ev.level, Some(&ev.log_path))
-                        .await
-                    {
-                        Ok(_) => tracing::debug!("Telemetry sent: {} {}", ev.level, ev.ip),
-                        Err(e) => tracing::warn!("Failed to report telemetry for {}: {}", ev.ip, e),
-                    }
-                });
+                enqueue_outbox(
+                    &outbox,
+                    OutboxPayload::Telemetry {
+                        ip: event.ip.clone(),
+                        reason: event.reason.clone(),
+                        level: event.level.clone(),
+                        log_path: Some(event.log_path.clone()),
+                    },
+                    &outbox_notify,
+                )
+                .await;
             }
             _ => {
-                // Alert and other events: fire-and-forget telemetry.
-                let client = api_client.clone();
-                let ev = event.clone();
-                tokio::spawn(async move {
-                    match client
-                        .report_telemetry(&ev.ip, &ev.reason, &ev.level, Some(&ev.log_path))
-                        .await
-                    {
-                        Ok(_) => tracing::debug!("Telemetry sent: {} {}", ev.level, ev.ip),
-                        Err(e) => tracing::warn!("Failed to report telemetry for {}: {}", ev.ip, e),
-                    }
-                });
+                enqueue_outbox(
+                    &outbox,
+                    OutboxPayload::Telemetry {
+                        ip: event.ip.clone(),
+                        reason: event.reason.clone(),
+                        level: event.level.clone(),
+                        log_path: Some(event.log_path.clone()),
+                    },
+                    &outbox_notify,
+                )
+                .await;
             }
         }
     }
@@ -348,6 +412,18 @@ async fn run() -> Result<()> {
     let _ = watcher_handle.await;
 
     Ok(())
+}
+
+async fn enqueue_outbox(outbox: &Arc<Mutex<Outbox>>, payload: OutboxPayload, notify: &Arc<Notify>) {
+    let enqueue_result = {
+        let mut outbox = outbox.lock().await;
+        outbox.enqueue(payload)
+    };
+
+    match enqueue_result {
+        Ok(_) => notify.notify_one(),
+        Err(e) => tracing::warn!("Failed to persist outbound report: {}", e),
+    }
 }
 
 /// Set up local configuration. Does NOT connect to the server.

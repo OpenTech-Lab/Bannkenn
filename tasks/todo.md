@@ -377,7 +377,40 @@
   - `cargo check --workspace`
 
 ## Phase 22 – Offline agent continuity with cached server state (Codex)
-- [ ] Verify current disconnect behavior for server-derived state and outbound reporting
-- [ ] Persist last-known shared risk and block knowledge locally for offline startup/use
-- [ ] Add a durable local outbox for telemetry/decision/login reports and periodic retry
-- [ ] Verify agent behavior with focused tests and workspace checks
+- [x] Verify current disconnect behavior for server-derived state and outbound reporting
+- [x] Persist last-known shared risk and block knowledge locally for offline startup/use
+- [x] Add a durable local outbox for telemetry/decision/login reports and periodic retry
+- [x] Verify agent behavior with focused tests and workspace checks
+
+## Review (Phase 22)
+- Findings against the requested behavior:
+  - Local blocking and local risk scoring already continued working without the server, including host/machine risk and threat-type risk adjustments.
+  - The last server picture was only kept in memory, so an agent restart during a server outage lost shared-risk state and known server block knowledge.
+  - Failed telemetry/decision/login uploads were only logged and dropped; they were not retained for later replay when connectivity returned.
+- Implemented:
+  - Added persistent offline cache for last-known blocked IP knowledge plus the latest shared-risk snapshot.
+  - Agent startup now restores cached blocked IPs into the local firewall before any network call, then refreshes from the server when reachable.
+  - Added a durable local outbox for telemetry, decisions, and SSH-login reports, with periodic retry and immediate wake-up on new events.
+  - Local block events now persist into the offline block cache so offline-created blocks survive agent restart even before the server acknowledges them.
+- Behavior after this phase:
+  - If the server is reachable, the agent still refreshes block decisions and shared fleet risk normally.
+  - If the server is unreachable, the agent continues using the last cached server state and keeps updating local host risk, threat-type risk, surge, campaign, and block logic in real time.
+  - Events generated while disconnected are retained locally and flushed later instead of being lost.
+- Verification:
+  - `cargo fmt --all`
+  - `cargo test -p bannkenn-agent`
+  - `cargo check --workspace`
+
+## Phase 23 – Release script default patch bump (Codex)
+- [x] Inspect current release script version resolution
+- [x] Add no-argument behavior that auto-increments the current patch version
+- [x] Verify the script syntax and no-argument resolution path safely
+
+## Review (Phase 23)
+- Implemented:
+  - Updated `scripts/release.sh` so `./scripts/release.sh` now bumps the current workspace patch version automatically.
+  - Kept explicit version usage unchanged, so `./scripts/release.sh 1.4.0` still releases exactly the requested version.
+  - Added a guard that only auto-increments plain release versions (`x.y.z`); prerelease/current nonstandard versions still require an explicit target.
+- Verification:
+  - `bash -n scripts/release.sh`
+  - `bash scripts/release.sh` in the current dirty worktree, confirming `1.3.16 → 1.3.17` before the existing clean-tree pre-flight guard stopped execution

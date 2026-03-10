@@ -6,6 +6,7 @@ pub mod config;
 pub mod event_risk;
 pub mod firewall;
 pub mod geoip;
+pub mod outbox;
 pub mod patterns;
 pub mod risk_level;
 pub mod shared_risk;

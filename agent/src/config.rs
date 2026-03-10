@@ -1,9 +1,9 @@
-use crate::shared_risk::SharedRiskSnapshot;
 use crate::burst::BurstConfig;
 use crate::butterfly::ButterflyShieldConfig;
 use crate::campaign::CampaignConfig;
 use crate::event_risk::EventRiskConfig;
 use crate::risk_level::RiskLevelConfig;
+use crate::shared_risk::SharedRiskSnapshot;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -267,7 +267,8 @@ mod tests {
 
     #[test]
     fn offline_agent_state_round_trips() {
-        let dir = std::env::temp_dir().join(format!("bannkenn-offline-state-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("bannkenn-offline-state-{}", uuid::Uuid::new_v4()));
         let path = dir.join("offline.toml");
         let state = OfflineAgentState {
             known_blocked_ips: HashMap::from([("203.0.113.10".to_string(), "agent".to_string())]),
