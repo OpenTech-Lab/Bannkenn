@@ -8,7 +8,7 @@ use crate::patterns::{all_patterns, all_ssh_login_patterns};
 use crate::risk_level::HostRiskLevel;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::fs::File;
@@ -52,6 +52,13 @@ pub struct SecurityEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Result of a local firewall enforcement attempt.
+#[derive(Debug, Clone)]
+pub enum BlockOutcome {
+    Enforced(String),
+    Failed(String),
+}
+
 /// Monitors multiple log files, emits telemetry events for every detection,
 /// and elevates to block when threshold is exceeded.
 /// IPs already in `known_blocked_ips` are immediately emitted as `level=listed`.
@@ -59,6 +66,8 @@ pub async fn watch(
     config: Arc<AgentConfig>,
     tx: mpsc::Sender<SecurityEvent>,
     known_blocked_ips: Arc<RwLock<HashMap<String, String>>>,
+    enforced_blocked_ips: Arc<RwLock<HashSet<String>>>,
+    mut block_outcomes_rx: mpsc::Receiver<BlockOutcome>,
 ) -> Result<()> {
     let log_paths = config.effective_log_paths();
     if log_paths.is_empty() {
@@ -82,8 +91,9 @@ pub async fn watch(
 
     // Sliding window counters: IP -> deque of attempt timestamps
     let mut ip_attempts: HashMap<String, VecDeque<Instant>> = HashMap::new();
-    // IPs already blocked — avoids re-reporting block action repeatedly.
-    let mut already_blocked: HashMap<String, ()> = HashMap::new();
+    // IPs currently waiting on a local firewall result. Suppresses duplicate
+    // block/listed events while `block_ip()` is in-flight.
+    let mut pending_local_blocks: HashSet<String> = HashSet::new();
 
     let mut burst_detector = BurstDetector::new();
     let mut host_risk = HostRiskLevel::new();
@@ -117,20 +127,45 @@ pub async fn watch(
         }
     });
 
-    while let Some(raw) = raw_rx.recv().await {
-        process_failed_attempt(
-            &raw,
-            &mut ip_attempts,
-            &mut already_blocked,
-            &mut burst_detector,
-            &mut host_risk,
-            &mut surge_detector,
-            &mut campaign_tracker,
-            &config,
-            &tx,
-            &known_blocked_ips,
-        )
-        .await;
+    let mut block_outcomes_open = true;
+    loop {
+        tokio::select! {
+            maybe_outcome = block_outcomes_rx.recv(), if block_outcomes_open => {
+                match maybe_outcome {
+                    Some(outcome) => {
+                        handle_block_outcome(
+                            outcome,
+                            &mut pending_local_blocks,
+                            &mut ip_attempts,
+                            &mut burst_detector,
+                            &mut host_risk,
+                        );
+                    }
+                    None => block_outcomes_open = false,
+                }
+            }
+            maybe_raw = raw_rx.recv() => {
+                match maybe_raw {
+                    Some(raw) => {
+                        process_failed_attempt(
+                            &raw,
+                            &mut ip_attempts,
+                            &mut pending_local_blocks,
+                            &mut burst_detector,
+                            &mut host_risk,
+                            &mut surge_detector,
+                            &mut campaign_tracker,
+                            &config,
+                            &tx,
+                            &known_blocked_ips,
+                            &enforced_blocked_ips,
+                        )
+                        .await;
+                    }
+                    None => break,
+                }
+            }
+        }
     }
 
     Ok(())
@@ -256,6 +291,26 @@ fn is_immediate_block_signal(reason: &str) -> bool {
         || reason == "SSH max auth attempts exceeded"
 }
 
+fn handle_block_outcome(
+    outcome: BlockOutcome,
+    pending_local_blocks: &mut HashSet<String>,
+    ip_attempts: &mut HashMap<String, VecDeque<Instant>>,
+    burst_detector: &mut BurstDetector,
+    host_risk: &mut HostRiskLevel,
+) {
+    match outcome {
+        BlockOutcome::Enforced(ip) => {
+            pending_local_blocks.remove(&ip);
+            ip_attempts.remove(&ip);
+            burst_detector.clear_ip(&ip);
+            host_risk.record_block();
+        }
+        BlockOutcome::Failed(ip) => {
+            pending_local_blocks.remove(&ip);
+        }
+    }
+}
+
 /// Extract the effective log content from a raw line read off disk.
 ///
 /// When a service (nginx, sshd, any daemon) runs inside a **Docker container**
@@ -301,20 +356,21 @@ async fn open_log_from_start(path: &str) -> Result<File> {
 /// Record a failed attempt and emit alert/block telemetry.
 ///
 /// Processing order:
-/// 1. Skip IPs already blocked this session.
+/// 1. Skip IPs already locally enforced or currently pending enforcement.
 /// 2. IPs in the known block-list DB → emit `level=listed` immediately.
 /// 3. Burst detection (if enabled) → block immediately on rapid-fire hits.
 /// 4. Sliding-window attempt counter (enforces minimum 10 s window).
-/// 5. Butterfly or static base threshold, reduced by host risk level.
-/// 6. Event-type risk rank + surge → further reduce threshold.
-/// 7. Campaign correlation (cross-IP) → if campaign, set threshold = 1.
-/// 8. Immediate-block signal check (certain SSH events hard-block regardless).
-/// 9. Emit alert or block event based on attempts vs effective threshold.
+/// 5. Butterfly or static base threshold.
+/// 6. Host risk level adjustment.
+/// 7. Event-type risk rank + surge → further reduce threshold.
+/// 8. Campaign correlation (cross-IP) → if campaign, set threshold = 1.
+/// 9. Immediate-block signal check (certain SSH events hard-block regardless).
+/// 10. Emit alert or block event based on attempts vs effective threshold.
 #[allow(clippy::too_many_arguments)]
 async fn process_failed_attempt(
     raw: &RawDetection,
     ip_attempts: &mut HashMap<String, VecDeque<Instant>>,
-    already_blocked: &mut HashMap<String, ()>,
+    pending_local_blocks: &mut HashSet<String>,
     burst_detector: &mut BurstDetector,
     host_risk: &mut HostRiskLevel,
     surge_detector: &mut EventSurgeDetector,
@@ -322,9 +378,12 @@ async fn process_failed_attempt(
     config: &AgentConfig,
     tx: &mpsc::Sender<SecurityEvent>,
     known_blocked_ips: &Arc<RwLock<HashMap<String, String>>>,
+    enforced_blocked_ips: &Arc<RwLock<HashSet<String>>>,
 ) {
-    // Step 1: already blocked this session — skip silently.
-    if already_blocked.contains_key(&raw.ip) {
+    // Step 1: local firewall already enforced this IP, or an enforcement attempt
+    // is still in-flight — skip silently.
+    if pending_local_blocks.contains(&raw.ip) || enforced_blocked_ips.read().await.contains(&raw.ip)
+    {
         return;
     }
 
@@ -345,8 +404,10 @@ async fn process_failed_attempt(
             username: None,
             timestamp: Utc::now(),
         };
-        let _ = tx.send(event).await;
-        already_blocked.insert(raw.ip.clone(), ());
+        pending_local_blocks.insert(raw.ip.clone());
+        if tx.send(event).await.is_err() {
+            pending_local_blocks.remove(&raw.ip);
+        }
         return;
     }
 
@@ -370,7 +431,10 @@ async fn process_failed_attempt(
                 username: None,
                 timestamp: Utc::now(),
             };
-            let _ = tx.send(event).await;
+            pending_local_blocks.insert(raw.ip.clone());
+            if tx.send(event).await.is_err() {
+                pending_local_blocks.remove(&raw.ip);
+            }
 
             tracing::info!(
                 "Burst detected for IP {}: {} hits within {}s",
@@ -378,12 +442,6 @@ async fn process_failed_attempt(
                 burst_count,
                 burst_cfg.window_secs
             );
-
-            burst_detector.clear_ip(&raw.ip);
-            // Also clear the sliding-window state so stale entries don't accumulate.
-            ip_attempts.remove(&raw.ip);
-            host_risk.record_block();
-            already_blocked.insert(raw.ip.clone(), ());
             return;
         }
     }
@@ -504,7 +562,10 @@ async fn process_failed_attempt(
             timestamp: Utc::now(),
         };
 
-        let _ = tx.send(security_event).await;
+        pending_local_blocks.insert(raw.ip.clone());
+        if tx.send(security_event).await.is_err() {
+            pending_local_blocks.remove(&raw.ip);
+        }
 
         tracing::info!(
             "Immediate block signal for IP {}{}  country={} asn='{}' reason='{}'",
@@ -514,10 +575,6 @@ async fn process_failed_attempt(
             geo_tag.asn_org,
             raw.reason
         );
-
-        host_risk.record_block();
-        already_blocked.insert(raw.ip.clone(), ());
-        ip_attempts.remove(&raw.ip);
         return;
     }
 
@@ -555,7 +612,13 @@ async fn process_failed_attempt(
         timestamp: Utc::now(),
     };
 
-    let _ = tx.send(security_event).await;
+    if level == "block" {
+        pending_local_blocks.insert(raw.ip.clone());
+    }
+
+    if tx.send(security_event).await.is_err() && level == "block" {
+        pending_local_blocks.remove(&raw.ip);
+    }
 
     if level == "block" {
         tracing::info!(
@@ -568,16 +631,24 @@ async fn process_failed_attempt(
             effective,
             raw.reason
         );
-
-        host_risk.record_block();
-        already_blocked.insert(raw.ip.clone(), ());
-        ip_attempts.remove(&raw.ip);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_log_line, is_immediate_block_signal};
+    use super::{
+        extract_log_line, handle_block_outcome, is_immediate_block_signal, process_failed_attempt,
+        BlockOutcome, RawDetection,
+    };
+    use crate::burst::BurstDetector;
+    use crate::campaign::LocalCampaignTracker;
+    use crate::config::AgentConfig;
+    use crate::event_risk::EventSurgeDetector;
+    use crate::risk_level::HostRiskLevel;
+    use std::collections::{HashMap, HashSet, VecDeque};
+    use std::sync::Arc;
+    use std::time::Instant;
+    use tokio::sync::{mpsc, RwLock};
 
     #[test]
     fn immediate_block_signal_matches_ssh_close_patterns() {
@@ -636,6 +707,203 @@ mod tests {
         assert_eq!(
             result.as_ref(),
             "2026/03/05 02:18:53 [error] 12#0: *1 connect() failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn listed_ip_retries_after_failed_local_enforcement() {
+        let config = AgentConfig::default();
+        let raw = RawDetection {
+            ip: "203.0.113.10".to_string(),
+            reason: "Failed SSH password".to_string(),
+            log_path: "/var/log/auth.log".to_string(),
+        };
+        let mut ip_attempts: HashMap<String, VecDeque<Instant>> = HashMap::new();
+        let mut pending_local_blocks = HashSet::new();
+        let mut burst_detector = BurstDetector::new();
+        let mut host_risk = HostRiskLevel::new();
+        let mut surge_detector = EventSurgeDetector::new();
+        let mut campaign_tracker = LocalCampaignTracker::new();
+        let (tx, mut rx) = mpsc::channel(8);
+        let known_blocked_ips = Arc::new(RwLock::new(HashMap::from([(
+            raw.ip.clone(),
+            "ipsum_feed".to_string(),
+        )])));
+        let enforced_blocked_ips = Arc::new(RwLock::new(HashSet::new()));
+
+        process_failed_attempt(
+            &raw,
+            &mut ip_attempts,
+            &mut pending_local_blocks,
+            &mut burst_detector,
+            &mut host_risk,
+            &mut surge_detector,
+            &mut campaign_tracker,
+            &config,
+            &tx,
+            &known_blocked_ips,
+            &enforced_blocked_ips,
+        )
+        .await;
+
+        let first = rx.recv().await.expect("first listed event");
+        assert_eq!(first.level, "listed");
+        assert!(pending_local_blocks.contains(&raw.ip));
+
+        process_failed_attempt(
+            &raw,
+            &mut ip_attempts,
+            &mut pending_local_blocks,
+            &mut burst_detector,
+            &mut host_risk,
+            &mut surge_detector,
+            &mut campaign_tracker,
+            &config,
+            &tx,
+            &known_blocked_ips,
+            &enforced_blocked_ips,
+        )
+        .await;
+        assert!(
+            rx.try_recv().is_err(),
+            "pending block should suppress duplicates"
+        );
+
+        handle_block_outcome(
+            BlockOutcome::Failed(raw.ip.clone()),
+            &mut pending_local_blocks,
+            &mut ip_attempts,
+            &mut burst_detector,
+            &mut host_risk,
+        );
+
+        process_failed_attempt(
+            &raw,
+            &mut ip_attempts,
+            &mut pending_local_blocks,
+            &mut burst_detector,
+            &mut host_risk,
+            &mut surge_detector,
+            &mut campaign_tracker,
+            &config,
+            &tx,
+            &known_blocked_ips,
+            &enforced_blocked_ips,
+        )
+        .await;
+
+        let second = rx
+            .recv()
+            .await
+            .expect("listed event should retry after failure");
+        assert_eq!(second.level, "listed");
+    }
+
+    #[tokio::test]
+    async fn threshold_block_retries_without_rebuilding_attempt_count() {
+        let config = AgentConfig {
+            threshold: 2,
+            ..AgentConfig::default()
+        };
+        let raw = RawDetection {
+            ip: "198.51.100.24".to_string(),
+            reason: "Failed SSH password".to_string(),
+            log_path: "/var/log/auth.log".to_string(),
+        };
+        let mut ip_attempts: HashMap<String, VecDeque<Instant>> = HashMap::new();
+        let mut pending_local_blocks = HashSet::new();
+        let mut burst_detector = BurstDetector::new();
+        let mut host_risk = HostRiskLevel::new();
+        let mut surge_detector = EventSurgeDetector::new();
+        let mut campaign_tracker = LocalCampaignTracker::new();
+        let (tx, mut rx) = mpsc::channel(8);
+        let known_blocked_ips = Arc::new(RwLock::new(HashMap::new()));
+        let enforced_blocked_ips = Arc::new(RwLock::new(HashSet::new()));
+
+        process_failed_attempt(
+            &raw,
+            &mut ip_attempts,
+            &mut pending_local_blocks,
+            &mut burst_detector,
+            &mut host_risk,
+            &mut surge_detector,
+            &mut campaign_tracker,
+            &config,
+            &tx,
+            &known_blocked_ips,
+            &enforced_blocked_ips,
+        )
+        .await;
+        let first = rx.recv().await.expect("first alert event");
+        assert_eq!(first.level, "alert");
+
+        process_failed_attempt(
+            &raw,
+            &mut ip_attempts,
+            &mut pending_local_blocks,
+            &mut burst_detector,
+            &mut host_risk,
+            &mut surge_detector,
+            &mut campaign_tracker,
+            &config,
+            &tx,
+            &known_blocked_ips,
+            &enforced_blocked_ips,
+        )
+        .await;
+        let second = rx.recv().await.expect("threshold block event");
+        assert_eq!(second.level, "block");
+        assert_eq!(second.attempts, 2);
+
+        process_failed_attempt(
+            &raw,
+            &mut ip_attempts,
+            &mut pending_local_blocks,
+            &mut burst_detector,
+            &mut host_risk,
+            &mut surge_detector,
+            &mut campaign_tracker,
+            &config,
+            &tx,
+            &known_blocked_ips,
+            &enforced_blocked_ips,
+        )
+        .await;
+        assert!(
+            rx.try_recv().is_err(),
+            "pending block should suppress duplicates"
+        );
+
+        handle_block_outcome(
+            BlockOutcome::Failed(raw.ip.clone()),
+            &mut pending_local_blocks,
+            &mut ip_attempts,
+            &mut burst_detector,
+            &mut host_risk,
+        );
+
+        process_failed_attempt(
+            &raw,
+            &mut ip_attempts,
+            &mut pending_local_blocks,
+            &mut burst_detector,
+            &mut host_risk,
+            &mut surge_detector,
+            &mut campaign_tracker,
+            &config,
+            &tx,
+            &known_blocked_ips,
+            &enforced_blocked_ips,
+        )
+        .await;
+        let third = rx
+            .recv()
+            .await
+            .expect("failed local block should retry immediately");
+        assert_eq!(third.level, "block");
+        assert!(
+            third.attempts >= 3,
+            "attempt history should survive failed enforcement"
         );
     }
 }

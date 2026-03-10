@@ -187,6 +187,13 @@ struct CategoryState {
     last_baseline_update: Instant,
 }
 
+fn bootstrap_surge_threshold(cfg: &EventRiskConfig) -> f64 {
+    // In a fresh process there is no historical baseline yet. Use a derived
+    // minimum event count so an obvious same-category wave can still escalate
+    // during the first active window instead of staying stuck at rank-only.
+    (cfg.surge_ratio.ceil() + 1.0).max(4.0)
+}
+
 impl CategoryState {
     fn new() -> Self {
         Self {
@@ -254,8 +261,15 @@ impl EventSurgeDetector {
         }
 
         // Surge: current count significantly exceeds the baseline.
-        // Require baseline > 1 to avoid false positives when there is no history yet.
-        entry.baseline > 1.0 && current_count > entry.baseline * cfg.surge_ratio
+        //
+        // Bootstrap path: on a fresh start there is no baseline yet, but an
+        // obvious same-category flood should still escalate inside the first
+        // window instead of waiting an entire window just to learn "normal".
+        if entry.baseline > 1.0 {
+            current_count > entry.baseline * cfg.surge_ratio
+        } else {
+            current_count >= bootstrap_surge_threshold(cfg)
+        }
     }
 }
 
@@ -395,5 +409,45 @@ mod tests {
         let mut det = EventSurgeDetector::new();
         let (eff, _, _) = adjust_threshold(1, "SSH max auth attempts exceeded", &mut det, &cfg);
         assert!(eff >= 1);
+    }
+
+    #[test]
+    fn surge_bootstraps_within_first_window() {
+        let cfg = EventRiskConfig {
+            enabled: true,
+            surge_window_secs: 300,
+            surge_ratio: 3.0,
+            ..Default::default()
+        };
+        let mut det = EventSurgeDetector::new();
+
+        assert!(!det.record("Invalid SSH user", &cfg));
+        assert!(!det.record("Invalid SSH user", &cfg));
+        assert!(!det.record("Invalid SSH user", &cfg));
+        assert!(
+            det.record("Invalid SSH user", &cfg),
+            "fourth same-category hit in a fresh window should bootstrap surge"
+        );
+    }
+
+    #[test]
+    fn adjust_threshold_marks_bootstrap_surge() {
+        let cfg = EventRiskConfig {
+            enabled: true,
+            surge_window_secs: 300,
+            surge_ratio: 3.0,
+            surge_reduction: 0.5,
+            ..Default::default()
+        };
+        let mut det = EventSurgeDetector::new();
+
+        let _ = adjust_threshold(8, "Invalid SSH user", &mut det, &cfg);
+        let _ = adjust_threshold(8, "Invalid SSH user", &mut det, &cfg);
+        let _ = adjust_threshold(8, "Invalid SSH user", &mut det, &cfg);
+        let (eff, rank, surge) = adjust_threshold(8, "Invalid SSH user", &mut det, &cfg);
+
+        assert_eq!(rank, RiskRank::High);
+        assert!(surge, "bootstrap wave should enter surge mode");
+        assert_eq!(eff, 2, "High rank (0.5) plus surge (0.5) should quarter 8");
     }
 }

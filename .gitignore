@@ -1,6 +1,7 @@
 # dashboard
 node_modules/
 .next/
+docs/logs
 
 # Rust
 target/

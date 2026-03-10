@@ -65,6 +65,26 @@
 - Although `already_blocked` prevents reuse, failing to remove the stale VecDeque wastes memory proportionally to attack volume
 - Fix: call `ip_attempts.remove(&raw.ip)` immediately after burst fires (alongside `burst_detector.clear_ip` and `already_blocked.insert`)
 
+### Local block suppression must wait for firewall success
+- Treating an IP as "already blocked" before `block_ip()` succeeds is incorrect; one failed firewall call can suppress every future retry for that attacker
+- Keep duplicate block/listed events suppressed only while enforcement is in-flight, then clear the pending state on failure so the next hit retries immediately
+- Do not clear per-IP attempt history until local enforcement succeeds, or the detector will restart from zero after a failed block attempt
+
+### Container-exposed services need forward-path firewall rules
+- Dropping only in host `INPUT` is insufficient for Docker or other forwarded traffic; published container ports usually traverse `FORWARD`
+- BannKenn monitors Docker log files, so its firewall layer must cover both host traffic and forwarded/container traffic
+- Fix: install block rules in both `INPUT` and `FORWARD` paths (or their nftables equivalents), and make rule/setup upgrades idempotent so existing installs pick up the new chain coverage
+
+### Surge detectors need a cold-start bootstrap path
+- A surge algorithm that waits a full baseline window before it can ever declare surge will miss the entire first sustained attack wave after process start
+- If the system is expected to "level up" repeated same-category attacks quickly, add a bootstrap threshold for the no-baseline state instead of relying only on historical EMA comparisons
+- Missing tests around cold-start behavior hide this class of bug; add explicit first-window regression coverage
+
+### Runtime config defaults must reflect expected protection behavior
+- If a feature like cross-IP campaign escalation is considered core detection behavior, leaving it absent/disabled in generated configs will look like an algorithm bug in production
+- For backward compatibility, apply sane runtime defaults when optional config sections are missing, and make new configs persist those defaults explicitly
+- If default thresholds are too conservative for real attacks, tune them based on user-observed behavior and add tests so the response profile stays intentional
+
 ### GeoIP backfill validation must be agent-scoped
 - After schema/backfill changes, verify specific affected agent rows (e.g., `/api/v1/agents/:id/decisions`) instead of only sampling global endpoints.
 - If a user reports stale/null values, add a targeted backfill path and return post-update sample values from DB to confirm write success.

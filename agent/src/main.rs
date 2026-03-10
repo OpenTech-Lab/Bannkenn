@@ -16,7 +16,7 @@ use clap::{Parser, Subcommand};
 use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -26,9 +26,9 @@ use tokio::time::{interval, Duration};
 use uuid::Uuid;
 
 use crate::client::ApiClient;
-use crate::config::AgentConfig;
+use crate::config::{default_runtime_campaign_config, AgentConfig};
 use crate::firewall::{block_ip, detect_backend, init_firewall};
-use crate::watcher::{watch, SecurityEvent};
+use crate::watcher::{watch, BlockOutcome, SecurityEvent};
 
 #[derive(Parser)]
 #[command(name = "bannkenn-agent")]
@@ -124,6 +124,7 @@ async fn run() -> Result<()> {
     // report which database listed the IP when emitting level=listed events.
     let known_blocked_ips: Arc<RwLock<HashMap<String, String>>> =
         Arc::new(RwLock::new(HashMap::new()));
+    let enforced_blocked_ips: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
 
     // Initial fetch: load all existing block-list IPs before starting the watcher
     // so detections are classified "listed" from the very first event.
@@ -141,7 +142,10 @@ async fn run() -> Result<()> {
             }
             for d in &decisions {
                 match block_ip(&d.ip, &backend).await {
-                    Ok(_) => restored += 1,
+                    Ok(_) => {
+                        restored += 1;
+                        enforced_blocked_ips.write().await.insert(d.ip.clone());
+                    }
                     Err(e) => {
                         tracing::warn!(
                             "startup: failed to restore firewall block for {}: {}",
@@ -163,19 +167,34 @@ async fn run() -> Result<()> {
     }
 
     let (tx, mut rx) = mpsc::channel::<SecurityEvent>(1000);
+    let (block_outcome_tx, block_outcome_rx) = mpsc::channel::<BlockOutcome>(1000);
 
     let config_arc = Arc::new(config);
 
     let config_for_watcher = Arc::clone(&config_arc);
     let known_ips_for_watcher = Arc::clone(&known_blocked_ips);
+    let enforced_ips_for_watcher = Arc::clone(&enforced_blocked_ips);
     let watcher_handle = tokio::spawn(async move {
-        if let Err(e) = watch(config_for_watcher, tx, known_ips_for_watcher).await {
+        if let Err(e) = watch(
+            config_for_watcher,
+            tx,
+            known_ips_for_watcher,
+            enforced_ips_for_watcher,
+            block_outcome_rx,
+        )
+        .await
+        {
             tracing::error!("Watcher error: {}", e);
         }
     });
 
     let sync_client = ApiClient::new(config_arc.server_url.clone(), config_arc.jwt_token.clone());
-    tokio::spawn(sync::sync_loop(sync_client, Arc::clone(&known_blocked_ips)));
+    tokio::spawn(sync::sync_loop(
+        sync_client,
+        Arc::clone(&known_blocked_ips),
+        Arc::clone(&enforced_blocked_ips),
+        block_outcome_tx.clone(),
+    ));
 
     let heartbeat_client =
         ApiClient::new(config_arc.server_url.clone(), config_arc.jwt_token.clone());
@@ -236,8 +255,19 @@ async fn run() -> Result<()> {
             "block" => {
                 // Apply firewall IMMEDIATELY — before any network I/O.
                 match block_ip(&event.ip, &backend).await {
-                    Ok(_) => tracing::info!("Blocked IP: {}", event.ip),
-                    Err(e) => tracing::error!("Failed to block IP {}: {}", event.ip, e),
+                    Ok(_) => {
+                        tracing::info!("Blocked IP: {}", event.ip);
+                        enforced_blocked_ips.write().await.insert(event.ip.clone());
+                        let _ = block_outcome_tx
+                            .send(BlockOutcome::Enforced(event.ip.clone()))
+                            .await;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to block IP {}: {}", event.ip, e);
+                        let _ = block_outcome_tx
+                            .send(BlockOutcome::Failed(event.ip.clone()))
+                            .await;
+                    }
                 }
                 // Update shared set so watcher won't re-process this IP.
                 known_blocked_ips
@@ -264,8 +294,19 @@ async fn run() -> Result<()> {
             "listed" => {
                 // IP already in block list DB: apply firewall IMMEDIATELY.
                 match block_ip(&event.ip, &backend).await {
-                    Ok(_) => tracing::info!("Listed IP blocked by firewall: {}", event.ip),
-                    Err(e) => tracing::error!("Failed to block listed IP {}: {}", event.ip, e),
+                    Ok(_) => {
+                        tracing::info!("Listed IP blocked by firewall: {}", event.ip);
+                        enforced_blocked_ips.write().await.insert(event.ip.clone());
+                        let _ = block_outcome_tx
+                            .send(BlockOutcome::Enforced(event.ip.clone()))
+                            .await;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to block listed IP {}: {}", event.ip, e);
+                        let _ = block_outcome_tx
+                            .send(BlockOutcome::Failed(event.ip.clone()))
+                            .await;
+                    }
                 }
                 // Fire-and-forget telemetry.
                 let client = api_client.clone();
@@ -379,7 +420,7 @@ async fn init() -> Result<()> {
         burst: None,
         risk_level: None,
         event_risk: None,
-        campaign: None,
+        campaign: Some(default_runtime_campaign_config()),
         mmdb_dir: None,
     };
 

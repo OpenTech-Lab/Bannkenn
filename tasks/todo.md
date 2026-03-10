@@ -296,3 +296,51 @@
 - Verification:
   - `cargo check --workspace` passed
   - `npm run build` in `dashboard/` passed
+
+## Phase 19 – Retry local enforcement when same IP keeps attacking (Codex)
+- [x] Confirm root cause for repeated same-IP attacks not resulting in durable local blocks
+- [x] Refactor agent suppression state so failed firewall enforcement does not silence future retries
+- [x] Add regression tests for failed local block attempts and subsequent reprocessing
+- [x] Verify with targeted and full agent test runs
+
+## Review (Phase 19)
+- Root causes identified:
+  - The watcher marked an IP as effectively blocked before `block_ip()` succeeded, so one failed local firewall call could silence future retries for the same attacker.
+  - The firewall only dropped traffic in `INPUT`, which does not cover forwarded/container-published traffic; Docker-hosted services could keep receiving requests even after a “successful” block.
+- Fixes:
+  - Added watcher/main feedback flow so duplicate block events are suppressed only while a local block is in-flight, then retried if enforcement fails.
+  - Preserved per-IP attempt history across failed local block attempts, so the next hit re-triggers blocking immediately instead of restarting the counter from 0.
+  - Added a separate `enforced_blocked_ips` cache so only successfully enforced local blocks are treated as suppressed.
+  - Extended firewall coverage to both host `INPUT` traffic and forwarded/container traffic (`FORWARD` for iptables, `forward` chain for nftables).
+  - Made nftables element insertion idempotent when an IP is already present.
+- Verification:
+  - `cargo fmt --all`
+  - `cargo check -p bannkenn-agent`
+  - `cargo test -p bannkenn-agent`
+  - `cargo check --workspace`
+
+## Phase 20 – Cross-IP risky category escalation fix (Codex)
+- [x] Confirm why repeated risky categories across different IPs stay at static rank tags like `Invalid SSH user [High]`
+- [x] Patch first-window surge logic so repeated same-category attacks can escalate without waiting an entire baseline window
+- [x] Ensure runtime configs that omit cross-IP campaign settings still enable category escalation with sane defaults
+- [x] Add regression tests and verify with agent/workspace checks
+
+## Review (Phase 20)
+- Root causes identified:
+  - The surge detector had a cold-start blind spot: it would not enter `surge` mode until after a full baseline window elapsed, so the first sustained wave of the same risky category stayed stuck at static rank tags.
+  - Cross-IP campaign escalation was optional and omitted by default in generated/legacy configs, so repeated `Invalid SSH user` events from different IPs often never escalated beyond `[High]`.
+- Fixes:
+  - Added bootstrap surge logic so a fresh same-category wave can escalate within the first active surge window instead of waiting an entire window to learn a baseline.
+  - Enabled runtime default campaign detection when the config omits a `campaign` section, and made `init` persist that default explicitly for new agents.
+  - Tightened the default volume campaign threshold from 5 distinct IPs to 3 distinct IPs for faster category-level escalation.
+- Added regression coverage for:
+  - bootstrap surge activation in `event_risk`
+  - threshold reduction on bootstrap surge
+  - runtime default campaign config population
+- Verification:
+  - `cargo test -p bannkenn-agent event_risk -- --nocapture`
+  - `cargo test -p bannkenn-agent campaign -- --nocapture`
+  - `cargo test -p bannkenn-agent config -- --nocapture`
+  - `cargo test -p bannkenn-agent`
+  - `cargo check --workspace`
+  - `cargo fmt --all -- --check`

@@ -60,7 +60,7 @@ fn default_window_secs() -> u64 {
     3600
 }
 fn default_distinct_ips_threshold() -> u32 {
-    5
+    3
 }
 fn default_geo_ips_threshold() -> u32 {
     3

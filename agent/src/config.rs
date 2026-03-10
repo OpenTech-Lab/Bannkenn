@@ -46,7 +46,8 @@ pub struct AgentConfig {
     pub event_risk: Option<EventRiskConfig>,
 
     /// Optional local cross-IP campaign correlation.
-    /// When absent or `enabled = false`, campaign detection is disabled.
+    /// When absent, runtime defaults enable volume-based campaign correlation.
+    /// Set `enabled = false` explicitly to disable it.
     #[serde(default)]
     pub campaign: Option<CampaignConfig>,
 
@@ -91,6 +92,13 @@ impl Default for AgentConfig {
 }
 
 impl AgentConfig {
+    fn apply_runtime_detection_defaults(mut self) -> Self {
+        if self.campaign.is_none() {
+            self.campaign = Some(default_runtime_campaign_config());
+        }
+        self
+    }
+
     /// Load configuration from ~/.config/bannkenn/agent.toml, or return defaults if missing
     pub fn load() -> Result<Self> {
         let config_path = Self::config_path()?;
@@ -98,9 +106,9 @@ impl AgentConfig {
         if config_path.exists() {
             let content = fs::read_to_string(&config_path)?;
             let config: AgentConfig = toml::from_str(&content)?;
-            Ok(config)
+            Ok(config.apply_runtime_detection_defaults())
         } else {
-            Ok(Self::default())
+            Ok(Self::default().apply_runtime_detection_defaults())
         }
     }
 
@@ -131,6 +139,13 @@ impl AgentConfig {
         } else {
             self.log_paths.clone()
         }
+    }
+}
+
+pub fn default_runtime_campaign_config() -> CampaignConfig {
+    CampaignConfig {
+        enabled: true,
+        ..Default::default()
     }
 }
 
@@ -202,5 +217,15 @@ mod tests {
         assert_eq!(config.server_url, deserialized.server_url);
         assert_eq!(config.jwt_token, deserialized.jwt_token);
         assert_eq!(config.threshold, deserialized.threshold);
+    }
+
+    #[test]
+    fn runtime_defaults_enable_campaign_when_missing() {
+        let config = AgentConfig::default().apply_runtime_detection_defaults();
+        let campaign = config
+            .campaign
+            .expect("runtime defaults should populate campaign config");
+        assert!(campaign.enabled);
+        assert_eq!(campaign.distinct_ips_threshold, 3);
     }
 }

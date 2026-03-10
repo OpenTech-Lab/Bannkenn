@@ -10,8 +10,9 @@ pub enum FirewallBackend {
 }
 
 /// Initialize firewall infrastructure required by the agent.
-/// For nftables: creates the `bannkenn_blocklist` named set and a drop rule in the
-/// `inet filter input` chain if they do not already exist. Safe to call on every startup.
+/// For nftables: creates the `bannkenn_blocklist` named set and drop rules in the
+/// `inet filter input` and `inet filter forward` chains if they do not already exist.
+/// Safe to call on every startup.
 /// For iptables and None backends, no setup is needed.
 pub async fn init_firewall(backend: &FirewallBackend) -> Result<()> {
     match backend {
@@ -21,39 +22,44 @@ pub async fn init_firewall(backend: &FirewallBackend) -> Result<()> {
 }
 
 /// Set up the nftables infrastructure needed by bannkenn:
-///   inet filter table → bannkenn_blocklist set → drop rule in input chain.
+///   inet filter table → bannkenn_blocklist set → drop rules in input + forward chains.
 /// Every step is guarded by a check so re-running on restart is idempotent.
 async fn init_nftables() -> Result<()> {
-    // Fast path: set already exists, nothing to do.
-    let check = Command::new("nft")
-        .args(["list", "set", "inet", "filter", "bannkenn_blocklist"])
-        .output()
-        .await?;
-    if check.status.success() {
-        tracing::debug!("nftables: bannkenn_blocklist set already exists");
-        return Ok(());
-    }
-
     tracing::info!("nftables: initializing bannkenn firewall infrastructure");
 
     // Create inet filter table — nft add is idempotent for tables.
     let _ = nft_run(&["add", "table", "inet", "filter"]).await;
 
-    // Create the bannkenn_blocklist set.
-    nft_run(&[
-        "add",
-        "set",
-        "inet",
-        "filter",
-        "bannkenn_blocklist",
-        "{ type ipv4_addr ; flags interval ; }",
-    ])
-    .await
-    .map_err(|e| anyhow!("Failed to create bannkenn_blocklist set: {}", e))?;
+    // Ensure the shared blocklist set exists.
+    let set_check = Command::new("nft")
+        .args(["list", "set", "inet", "filter", "bannkenn_blocklist"])
+        .output()
+        .await?;
+    if !set_check.status.success() {
+        nft_run(&[
+            "add",
+            "set",
+            "inet",
+            "filter",
+            "bannkenn_blocklist",
+            "{ type ipv4_addr ; flags interval ; }",
+        ])
+        .await
+        .map_err(|e| anyhow!("Failed to create bannkenn_blocklist set: {}", e))?;
+    }
 
-    // Ensure a base input chain exists (may already exist from system nftables config).
+    ensure_nft_chain("input", "input").await?;
+    ensure_nft_chain("forward", "forward").await?;
+    ensure_nft_drop_rule("input").await?;
+    ensure_nft_drop_rule("forward").await?;
+
+    tracing::info!("nftables: bannkenn_blocklist set and drop rules configured");
+    Ok(())
+}
+
+async fn ensure_nft_chain(chain: &str, hook: &str) -> Result<()> {
     let chain_check = Command::new("nft")
-        .args(["list", "chain", "inet", "filter", "input"])
+        .args(["list", "chain", "inet", "filter", chain])
         .output()
         .await?;
     if !chain_check.status.success() {
@@ -62,16 +68,21 @@ async fn init_nftables() -> Result<()> {
             "chain",
             "inet",
             "filter",
-            "input",
-            "{ type filter hook input priority 0 ; policy accept ; }",
+            chain,
+            &format!(
+                "{{ type filter hook {} priority 0 ; policy accept ; }}",
+                hook
+            ),
         ])
         .await
-        .map_err(|e| anyhow!("Failed to create inet filter input chain: {}", e))?;
+        .map_err(|e| anyhow!("Failed to create inet filter {} chain: {}", chain, e))?;
     }
+    Ok(())
+}
 
-    // Add drop rule only if not already present (avoids duplicates on restart).
+async fn ensure_nft_drop_rule(chain: &str) -> Result<()> {
     let chain_out = Command::new("nft")
-        .args(["list", "chain", "inet", "filter", "input"])
+        .args(["list", "chain", "inet", "filter", chain])
         .output()
         .await?;
     if !String::from_utf8_lossy(&chain_out.stdout).contains("bannkenn_blocklist") {
@@ -80,17 +91,15 @@ async fn init_nftables() -> Result<()> {
             "rule",
             "inet",
             "filter",
-            "input",
+            chain,
             "ip",
             "saddr",
             "@bannkenn_blocklist",
             "drop",
         ])
         .await
-        .map_err(|e| anyhow!("Failed to add blocklist drop rule: {}", e))?;
+        .map_err(|e| anyhow!("Failed to add blocklist drop rule to {}: {}", chain, e))?;
     }
-
-    tracing::info!("nftables: bannkenn_blocklist set and drop rule configured");
     Ok(())
 }
 
@@ -160,6 +169,10 @@ async fn block_ip_nftables(ip: &str) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("File exists") {
+            tracing::debug!("IP {} already present in nftables blocklist", ip);
+            return Ok(());
+        }
         return Err(anyhow!("nftables block failed for {}: {}", ip, stderr));
     }
 
@@ -169,17 +182,37 @@ async fn block_ip_nftables(ip: &str) -> Result<()> {
 
 /// Block IP using iptables
 async fn block_ip_iptables(ip: &str) -> Result<()> {
+    ensure_iptables_drop("INPUT", ip).await?;
+    ensure_iptables_drop("FORWARD", ip).await?;
+
+    tracing::info!("Blocked IP {} using iptables", ip);
+    Ok(())
+}
+
+async fn ensure_iptables_drop(chain: &str, ip: &str) -> Result<()> {
+    let check = Command::new("iptables")
+        .args(["-C", chain, "-s", ip, "-j", "DROP"])
+        .output()
+        .await?;
+    if check.status.success() {
+        return Ok(());
+    }
+
     let output = Command::new("iptables")
-        .args(["-I", "INPUT", "-s", ip, "-j", "DROP"])
+        .args(["-I", chain, "-s", ip, "-j", "DROP"])
         .output()
         .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!("iptables block failed for {}: {}", ip, stderr));
+        return Err(anyhow!(
+            "iptables block failed for {} in {}: {}",
+            ip,
+            chain,
+            stderr
+        ));
     }
 
-    tracing::info!("Blocked IP {} using iptables", ip);
     Ok(())
 }
 
