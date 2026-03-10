@@ -194,6 +194,12 @@ git pull
 docker compose -f docker/docker-compose.yml up -d --build
 ```
 
+### Reset Firewall
+
+```bash
+sudo bannkenn-agent cleanup-firewall
+```
+
 ### Uninstall
 
 Remove the agent from a Linux systemd host:
