@@ -424,3 +424,25 @@
   - Added `Outbox::is_empty()` to match the existing public `Outbox::len()` API and satisfy strict clippy settings.
 - Verification:
   - `cargo clippy --workspace -- -D warnings`
+
+## Phase 25 – Agent self-update command (Codex)
+- [x] Inspect current install/update flow and release asset assumptions
+- [x] Add `bannkenn-agent update [version]` to download and install the correct release asset
+- [x] Restart the systemd service automatically when updating an active installed agent
+- [x] Document and verify the update path with tests/checks
+
+## Review (Phase 25)
+- Findings:
+  - The agent had no built-in update path; updates were still manual download + chmod + move + manual service restart.
+  - Release asset naming was already stable enough to support a CLI updater without changing the server.
+- Implemented:
+  - Added `bannkenn-agent update [version]`
+  - No version argument downloads the latest GitHub release for the current platform
+  - Explicit versions like `bannkenn-agent update v1.3.18` or `bannkenn-agent update 1.3.18` are supported
+  - The updater replaces the currently running binary path and restarts `bannkenn-agent` automatically if the systemd service is active
+  - Updated README install docs to show the new command
+- Verification:
+  - `cargo fmt --all`
+  - `cargo test -p bannkenn-agent updater -- --nocapture`
+  - `cargo check --workspace`
+  - `cargo clippy --workspace -- -D warnings`

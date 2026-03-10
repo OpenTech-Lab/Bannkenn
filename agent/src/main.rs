@@ -11,6 +11,7 @@ mod patterns;
 mod risk_level;
 mod shared_risk;
 mod sync;
+mod updater;
 mod watcher;
 
 use anyhow::Result;
@@ -50,6 +51,11 @@ enum Commands {
     Init,
     /// Register this agent with the dashboard server (run after `init`)
     Connect,
+    /// Download and install the latest released agent binary, or a specific version
+    Update {
+        /// Optional version such as 1.3.18 or v1.3.18; defaults to latest release
+        version: Option<String>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,6 +72,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Commands::Init) => init().await?,
         Some(Commands::Connect) => connect().await?,
+        Some(Commands::Update { version }) => updater::update(version.as_deref()).await?,
         Some(Commands::Run) | None => run().await?,
     }
 

@@ -73,6 +73,15 @@ chmod +x bannkenn-agent
 sudo mv bannkenn-agent /usr/local/bin/bannkenn-agent
 ```
 
+Update an installed agent:
+
+```bash
+sudo bannkenn-agent update
+sudo bannkenn-agent update v1.3.18
+```
+
+`update` downloads the correct release asset for the current platform, replaces the installed binary, and restarts `bannkenn-agent` automatically when the systemd service is active.
+
 Linux ARM64:
 
 ```bash
