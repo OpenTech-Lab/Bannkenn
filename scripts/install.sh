@@ -65,27 +65,6 @@ install_from_cargo() {
     info "Installed to $INSTALL_DIR/$BINARY_NAME"
 }
 
-configure_systemd() {
-    cat > /etc/systemd/system/bannkenn-agent.service <<EOF
-[Unit]
-Description=BannKenn IPS Agent
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=${INSTALL_DIR}/${BINARY_NAME}
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
-    systemctl enable bannkenn-agent
-    info "Systemd service installed and enabled."
-}
-
 main() {
     require_root
 
@@ -99,18 +78,15 @@ main() {
     # Install binary
     install_from_cargo
 
-    # Install and enable systemd service unit
-    configure_systemd
-
     # Create root config directory (service runs as root for firewall access)
     mkdir -p "$CONFIG_DIR"
 
     info ""
     info "Installation complete!"
     info "Next steps:"
-    info "  1. sudo bannkenn-agent init     — configure the agent (server URL, log paths, threshold)"
+    info "  1. sudo bannkenn-agent init     — configure the agent and install the systemd unit"
     info "  2. sudo bannkenn-agent connect  — register with the dashboard and obtain a JWT token"
-    info "  3. sudo systemctl start bannkenn-agent"
+    info "  3. sudo systemctl enable --now bannkenn-agent"
 }
 
 main "$@"

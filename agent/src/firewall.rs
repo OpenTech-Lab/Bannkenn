@@ -1,6 +1,11 @@
 use anyhow::{anyhow, Result};
 use tokio::process::Command;
 
+const NFT_FAMILY: &str = "inet";
+const NFT_TABLE: &str = "filter";
+const NFT_BLOCKLIST_SET: &str = "bannkenn_blocklist";
+const NFT_BANNKENN_CHAINS: [&str; 2] = ["input", "forward"];
+
 /// Firewall backend detection and blocking
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FirewallBackend {
@@ -21,6 +26,17 @@ pub async fn init_firewall(backend: &FirewallBackend) -> Result<()> {
     }
 }
 
+/// Remove BannKenn-managed firewall state for the active backend.
+/// For nftables, this removes the BannKenn drop rules and shared blocklist set.
+/// The operation is idempotent so it can safely run both on process shutdown and
+/// via a systemd ExecStopPost hook.
+pub async fn cleanup_firewall(backend: &FirewallBackend) -> Result<()> {
+    match backend {
+        FirewallBackend::Nftables => cleanup_nftables().await,
+        FirewallBackend::Iptables | FirewallBackend::None => Ok(()),
+    }
+}
+
 /// Set up the nftables infrastructure needed by bannkenn:
 ///   inet filter table → bannkenn_blocklist set → drop rules in input + forward chains.
 /// Every step is guarded by a check so re-running on restart is idempotent.
@@ -28,24 +44,24 @@ async fn init_nftables() -> Result<()> {
     tracing::info!("nftables: initializing bannkenn firewall infrastructure");
 
     // Create inet filter table — nft add is idempotent for tables.
-    let _ = nft_run(&["add", "table", "inet", "filter"]).await;
+    let _ = nft_run(&["add", "table", NFT_FAMILY, NFT_TABLE]).await;
 
     // Ensure the shared blocklist set exists.
     let set_check = Command::new("nft")
-        .args(["list", "set", "inet", "filter", "bannkenn_blocklist"])
+        .args(["list", "set", NFT_FAMILY, NFT_TABLE, NFT_BLOCKLIST_SET])
         .output()
         .await?;
     if !set_check.status.success() {
         nft_run(&[
             "add",
             "set",
-            "inet",
-            "filter",
-            "bannkenn_blocklist",
+            NFT_FAMILY,
+            NFT_TABLE,
+            NFT_BLOCKLIST_SET,
             "{ type ipv4_addr ; flags interval ; }",
         ])
         .await
-        .map_err(|e| anyhow!("Failed to create bannkenn_blocklist set: {}", e))?;
+        .map_err(|e| anyhow!("Failed to create {} set: {}", NFT_BLOCKLIST_SET, e))?;
     }
 
     ensure_nft_chain("input", "input").await?;
@@ -57,17 +73,30 @@ async fn init_nftables() -> Result<()> {
     Ok(())
 }
 
+async fn cleanup_nftables() -> Result<()> {
+    tracing::info!("nftables: removing BannKenn-managed firewall rules");
+
+    for chain in NFT_BANNKENN_CHAINS {
+        remove_nft_drop_rules(chain).await?;
+    }
+
+    nft_run_allow_missing(&["delete", "set", NFT_FAMILY, NFT_TABLE, NFT_BLOCKLIST_SET]).await?;
+
+    tracing::info!("nftables: BannKenn-managed firewall rules removed");
+    Ok(())
+}
+
 async fn ensure_nft_chain(chain: &str, hook: &str) -> Result<()> {
     let chain_check = Command::new("nft")
-        .args(["list", "chain", "inet", "filter", chain])
+        .args(["list", "chain", NFT_FAMILY, NFT_TABLE, chain])
         .output()
         .await?;
     if !chain_check.status.success() {
         nft_run(&[
             "add",
             "chain",
-            "inet",
-            "filter",
+            NFT_FAMILY,
+            NFT_TABLE,
             chain,
             &format!(
                 "{{ type filter hook {} priority 0 ; policy accept ; }}",
@@ -82,20 +111,22 @@ async fn ensure_nft_chain(chain: &str, hook: &str) -> Result<()> {
 
 async fn ensure_nft_drop_rule(chain: &str) -> Result<()> {
     let chain_out = Command::new("nft")
-        .args(["list", "chain", "inet", "filter", chain])
+        .args(["list", "chain", NFT_FAMILY, NFT_TABLE, chain])
         .output()
         .await?;
-    if !String::from_utf8_lossy(&chain_out.stdout).contains("bannkenn_blocklist") {
+    if !String::from_utf8_lossy(&chain_out.stdout).contains(NFT_BLOCKLIST_SET) {
         nft_run(&[
             "add",
             "rule",
-            "inet",
-            "filter",
+            NFT_FAMILY,
+            NFT_TABLE,
             chain,
             "ip",
             "saddr",
-            "@bannkenn_blocklist",
+            &format!("@{}", NFT_BLOCKLIST_SET),
             "drop",
+            "comment",
+            "bannkenn-managed",
         ])
         .await
         .map_err(|e| anyhow!("Failed to add blocklist drop rule to {}: {}", chain, e))?;
@@ -111,6 +142,79 @@ async fn nft_run(args: &[&str]) -> Result<()> {
         return Err(anyhow!("{}", stderr.trim()));
     }
     Ok(())
+}
+
+async fn nft_run_allow_missing(args: &[&str]) -> Result<()> {
+    let output = Command::new("nft").args(args).output().await?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if is_nft_missing_error(&stderr) {
+        return Ok(());
+    }
+
+    Err(anyhow!("{}", stderr.trim()))
+}
+
+async fn remove_nft_drop_rules(chain: &str) -> Result<()> {
+    let output = Command::new("nft")
+        .args(["-a", "list", "chain", NFT_FAMILY, NFT_TABLE, chain])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if is_nft_missing_error(&stderr) {
+            return Ok(());
+        }
+        return Err(anyhow!(
+            "Failed to inspect nftables chain {}: {}",
+            chain,
+            stderr.trim()
+        ));
+    }
+
+    for handle in bannkenn_rule_handles(&String::from_utf8_lossy(&output.stdout)) {
+        let handle_str = handle.to_string();
+        nft_run_allow_missing(&[
+            "delete",
+            "rule",
+            NFT_FAMILY,
+            NFT_TABLE,
+            chain,
+            "handle",
+            &handle_str,
+        ])
+        .await?;
+    }
+
+    Ok(())
+}
+
+fn bannkenn_rule_handles(chain_output: &str) -> Vec<u32> {
+    chain_output
+        .lines()
+        .filter(|line| line.contains(&format!("@{}", NFT_BLOCKLIST_SET)))
+        .filter_map(extract_nft_rule_handle)
+        .collect()
+}
+
+fn extract_nft_rule_handle(line: &str) -> Option<u32> {
+    line.split("# handle ")
+        .nth(1)?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+fn is_nft_missing_error(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("no such file or directory")
+        || stderr.contains("not found")
+        || stderr.contains("does not exist")
 }
 
 /// Detect available firewall backend on the system
@@ -159,9 +263,9 @@ async fn block_ip_nftables(ip: &str) -> Result<()> {
         .args([
             "add",
             "element",
-            "inet",
-            "filter",
-            "bannkenn_blocklist",
+            NFT_FAMILY,
+            NFT_TABLE,
+            NFT_BLOCKLIST_SET,
             &format!("{{ {} }}", ip),
         ])
         .output()
@@ -237,5 +341,38 @@ mod tests {
         // Ensure IPs are properly formatted when passed to commands
         let valid_ip = "192.168.1.1";
         assert!(valid_ip.contains('.'));
+    }
+
+    #[test]
+    fn bannkenn_rule_handle_parser_ignores_unrelated_rules() {
+        let chain = r#"
+table inet filter {
+	chain input {
+		type filter hook input priority filter; policy accept;
+		ct state established,related accept # handle 1
+		ip saddr @bannkenn_blocklist drop comment "bannkenn-managed" # handle 7
+		ip saddr 203.0.113.10 drop # handle 9
+		ip saddr @bannkenn_blocklist drop # handle 11
+	}
+}
+"#;
+
+        assert_eq!(bannkenn_rule_handles(chain), vec![7, 11]);
+    }
+
+    #[test]
+    fn nft_handle_parser_requires_numeric_handle() {
+        assert_eq!(
+            extract_nft_rule_handle("ip saddr @bannkenn_blocklist drop # handle 42"),
+            Some(42)
+        );
+        assert_eq!(
+            extract_nft_rule_handle("ip saddr @bannkenn_blocklist drop"),
+            None
+        );
+        assert_eq!(
+            extract_nft_rule_handle("ip saddr @bannkenn_blocklist drop # handle abc"),
+            None
+        );
     }
 }

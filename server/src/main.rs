@@ -5,6 +5,7 @@ mod feeds;
 mod geoip;
 mod routes;
 
+use anyhow::{bail, Context};
 use axum::{
     middleware,
     routing::{get, patch, post},
@@ -12,7 +13,11 @@ use axum::{
 };
 use config::ServerConfig;
 use db::Db;
-use std::sync::Arc;
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    sync::Arc,
+};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 
@@ -23,14 +28,24 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing
+    if matches!(std::env::args().nth(1).as_deref(), Some("healthcheck")) {
+        return run_healthcheck().await;
+    }
+
+    init_tracing();
+    run_server().await
+}
+
+fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive(tracing_subscriber::filter::LevelFilter::INFO.into()),
         )
         .init();
+}
 
+async fn run_server() -> anyhow::Result<()> {
     info!("Starting BannKenn server...");
 
     // Load configuration
@@ -206,7 +221,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http());
 
     // Parse bind address
-    let addr: std::net::SocketAddr = config.bind.parse()?;
+    let addr: SocketAddr = config.bind.parse()?;
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     info!("Server listening on {}", addr);
 
@@ -228,6 +243,65 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn run_healthcheck() -> anyhow::Result<()> {
+    let config = ServerConfig::load()?;
+    let target = healthcheck_target(&config.bind)?;
+    let mut stream = tokio::net::TcpStream::connect(target)
+        .await
+        .with_context(|| format!("failed to connect to {}", target))?;
+
+    stream
+        .write_all(b"GET /api/v1/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .context("failed to send healthcheck request")?;
+
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .await
+        .context("failed to read healthcheck response")?;
+
+    if healthcheck_response_ok(&response) {
+        return Ok(());
+    }
+
+    bail!("unexpected healthcheck response")
+}
+
+fn healthcheck_target(bind: &str) -> anyhow::Result<SocketAddr> {
+    let addr: SocketAddr = bind.parse()?;
+    let ip = match addr.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ip => ip,
+    };
+
+    Ok(SocketAddr::new(ip, addr.port()))
+}
+
+fn healthcheck_response_ok(response: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(response) else {
+        return false;
+    };
+
+    let Some((status_line, body)) = text.split_once("\r\n\r\n") else {
+        return false;
+    };
+
+    if !status_line.contains("200") {
+        return false;
+    }
+
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|json| {
+            json.get("status")
+                .and_then(|status| status.as_str())
+                .map(|status| status == "ok")
+        })
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,5 +311,31 @@ mod tests {
         let config = ServerConfig::default();
         let config = Arc::new(config);
         assert_eq!(config.bind, "0.0.0.0:3022");
+    }
+
+    #[test]
+    fn healthcheck_target_uses_loopback_for_unspecified_bind() {
+        let addr = healthcheck_target("0.0.0.0:3022").unwrap();
+        assert_eq!(addr, "127.0.0.1:3022".parse().unwrap());
+    }
+
+    #[test]
+    fn healthcheck_target_preserves_explicit_host() {
+        let addr = healthcheck_target("192.168.1.10:4040").unwrap();
+        assert_eq!(addr, "192.168.1.10:4040".parse().unwrap());
+    }
+
+    #[test]
+    fn healthcheck_response_ok_accepts_expected_payload() {
+        let response =
+            b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n{\"status\":\"ok\"}";
+        assert!(healthcheck_response_ok(response));
+    }
+
+    #[test]
+    fn healthcheck_response_ok_rejects_unhealthy_payload() {
+        let response =
+            b"HTTP/1.1 503 Service Unavailable\r\ncontent-type: application/json\r\n\r\n{\"status\":\"down\"}";
+        assert!(!healthcheck_response_ok(response));
     }
 }

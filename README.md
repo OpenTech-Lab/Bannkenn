@@ -35,7 +35,7 @@ cd bannkenn
 ### 2. Start server + dashboard
 
 ```bash
-docker compose up -d
+docker compose -f docker/docker-compose.yml up -d --build
 ```
 
 Check health:
@@ -52,17 +52,13 @@ Open dashboard:
 Option A: build from source (Linux/systemd path)
 
 ```bash
-# download this repo
-git clone https://github.com/OpenTech-Lab/bannkenn
-
-# run installer
-sudo bash install.sh
-
+# from the cloned repo root
+sudo bash scripts/install.sh
 ```
 
 This installs:
 - binary: `/usr/local/bin/bannkenn-agent`
-- service: `bannkenn-agent.service` (enabled)
+- service binary only; `bannkenn-agent init` installs `bannkenn-agent.service`
 
 Option B: install from GitHub Release URL (Linux x64 example)
 
@@ -104,7 +100,7 @@ Invoke-WebRequest -Uri "https://github.com/OpenTech-Lab/bannkenn/releases/downlo
 sudo bannkenn-agent init
 ```
 
-`init` now auto-detects available log sources and auto-selects a log file path.
+`init` now auto-detects available log sources, auto-selects a log file path, and writes `/etc/systemd/system/bannkenn-agent.service` automatically on Linux/systemd when run with `sudo`.
 
 ### 5. Register the agent to get JWT token
 
@@ -117,21 +113,7 @@ After registration succeeds, press `Ctrl+C` to return to shell.
 
 ### 6. Start the systemd service
 
-`sudo nano /etc/systemd/system/bannkenn-agent.service`
-```yml
-[Unit]
-Description=BannKenn IPS Agent
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/bannkenn-agent
-Restart=on-failure
-RestartSec=5
-```
-
 ```bash
-sudo systemctl daemon-reload
 sudo systemctl enable --now bannkenn-agent
 ```
 
@@ -139,6 +121,8 @@ sudo systemctl enable --now bannkenn-agent
 sudo systemctl status bannkenn-agent
 sudo systemctl restart bannkenn-agent
 ```
+
+Stopping the service removes BannKenn-managed nftables rules and its temporary blocklist set.
 
 ### 7. Verify agent status
 
@@ -148,6 +132,85 @@ sudo journalctl -u bannkenn-agent -n 100 --no-pager
 ```
 
 The dashboard agent status is `online` when heartbeat updates are received within 2 minutes.
+
+## Common Operations
+
+### Install
+
+Server + dashboard:
+
+```bash
+git clone https://github.com/OpenTech-Lab/bannkenn.git
+cd bannkenn
+docker compose -f docker/docker-compose.yml up -d --build
+```
+
+Agent from source:
+
+```bash
+cd bannkenn
+sudo bash scripts/install.sh
+sudo bannkenn-agent init
+sudo bannkenn-agent connect
+sudo systemctl enable --now bannkenn-agent
+```
+
+### Stop
+
+Stop server + dashboard:
+
+```bash
+docker compose -f docker/docker-compose.yml down
+```
+
+Stop only the agent service:
+
+```bash
+sudo systemctl stop bannkenn-agent
+```
+
+This stop path also removes BannKenn-managed nftables rules via `ExecStopPost`.
+
+### Update
+
+Update the installed agent to the latest release:
+
+```bash
+sudo bannkenn-agent update
+```
+
+Update to a specific release:
+
+```bash
+sudo bannkenn-agent update v1.3.18
+```
+
+The updater replaces `/usr/local/bin/bannkenn-agent` and restarts `bannkenn-agent` automatically when the systemd service is active.
+
+To refresh the server/dashboard containers after pulling new code:
+
+```bash
+git pull
+docker compose -f docker/docker-compose.yml up -d --build
+```
+
+### Uninstall
+
+Remove the agent from a Linux systemd host:
+
+```bash
+sudo bannkenn-agent uninstall
+```
+
+This stops/disables the service, removes `/etc/systemd/system/bannkenn-agent.service`, cleans up BannKenn-managed firewall state, deletes local agent config/JWT, and removes the running `bannkenn-agent` binary.
+
+Remove the local server/dashboard stack and named volumes:
+
+```bash
+docker compose -f docker/docker-compose.yml down -v
+```
+
+If you also want to remove the checked-out source tree, delete the `bannkenn/` directory afterwards.
 
 ## Typical First-Troubleshooting Checks
 

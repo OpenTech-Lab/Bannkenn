@@ -2,15 +2,15 @@
 node_modules/
 .next/
 docs/logs
+vendor/
 
 # Rust
 target/
-Cargo.lock
 
-# Config files with secrets
-*.toml
-!**/Cargo.toml
-!docker/**/*.toml
+# Local config files with secrets
+/server.toml
+/agent.toml
+*.local.toml
 
 # SQLite databases
 *.db

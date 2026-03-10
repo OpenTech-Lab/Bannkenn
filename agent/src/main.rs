@@ -9,6 +9,7 @@ mod geoip;
 mod outbox;
 mod patterns;
 mod risk_level;
+mod service;
 mod shared_risk;
 mod sync;
 mod updater;
@@ -30,8 +31,9 @@ use uuid::Uuid;
 
 use crate::client::ApiClient;
 use crate::config::{default_runtime_campaign_config, AgentConfig, OfflineAgentState};
-use crate::firewall::{block_ip, detect_backend, init_firewall};
+use crate::firewall::{block_ip, cleanup_firewall, detect_backend, init_firewall};
 use crate::outbox::{flush_pending, Outbox, OutboxPayload};
+use crate::service::{install_systemd_unit, uninstall_systemd_unit, SERVICE_UNIT_PATH};
 use crate::shared_risk::SharedRiskSnapshot;
 use crate::watcher::{watch, BlockOutcome, SecurityEvent};
 
@@ -47,8 +49,12 @@ struct Cli {
 enum Commands {
     /// Run the agent
     Run,
+    /// Remove BannKenn-managed firewall state and exit
+    CleanupFirewall,
     /// Initialize local configuration (does not connect to the dashboard server)
     Init,
+    /// Stop, disable, and remove the systemd service plus local agent state
+    Uninstall,
     /// Register this agent with the dashboard server (run after `init`)
     Connect,
     /// Download and install the latest released agent binary, or a specific version
@@ -71,7 +77,9 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Init) => init().await?,
+        Some(Commands::Uninstall) => uninstall().await?,
         Some(Commands::Connect) => connect().await?,
+        Some(Commands::CleanupFirewall) => cleanup_firewall_command().await?,
         Some(Commands::Update { version }) => updater::update(version.as_deref()).await?,
         Some(Commands::Run) | None => run().await?,
     }
@@ -241,7 +249,7 @@ async fn run() -> Result<()> {
     });
 
     let sync_client = ApiClient::new(config_arc.server_url.clone(), config_arc.jwt_token.clone());
-    tokio::spawn(sync::sync_loop(
+    let sync_handle = tokio::spawn(sync::sync_loop(
         sync_client,
         Arc::clone(&known_blocked_ips),
         Arc::clone(&enforced_blocked_ips),
@@ -260,7 +268,7 @@ async fn run() -> Result<()> {
     let flush_client = api_client.clone();
     let flush_outbox = Arc::clone(&outbox);
     let flush_notify = Arc::clone(&outbox_notify);
-    tokio::spawn(async move {
+    let flush_handle = tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(30));
         loop {
             tokio::select! {
@@ -281,7 +289,7 @@ async fn run() -> Result<()> {
     let heartbeat_client =
         ApiClient::new(config_arc.server_url.clone(), config_arc.jwt_token.clone());
     let butterfly_enabled = config_arc.butterfly_shield.as_ref().map(|c| c.enabled);
-    tokio::spawn(async move {
+    let heartbeat_handle = tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(30));
         ticker.tick().await;
 
@@ -295,7 +303,22 @@ async fn run() -> Result<()> {
         }
     });
 
-    while let Some(event) = rx.recv().await {
+    let mut shutdown_reason = None;
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
+
+    loop {
+        let event = tokio::select! {
+            maybe_event = rx.recv() => match maybe_event {
+                Some(event) => event,
+                None => break,
+            },
+            reason = &mut shutdown => {
+                shutdown_reason = Some(reason);
+                break;
+            }
+        };
+
         tracing::info!(
             "Security event: IP={} level={} rank={} campaign={} attempts={}/{} at={}",
             event.ip,
@@ -417,7 +440,25 @@ async fn run() -> Result<()> {
         }
     }
 
+    watcher_handle.abort();
+    sync_handle.abort();
+    flush_handle.abort();
+    heartbeat_handle.abort();
+
     let _ = watcher_handle.await;
+    let _ = sync_handle.await;
+    let _ = flush_handle.await;
+    let _ = heartbeat_handle.await;
+
+    if let Some(reason) = shutdown_reason {
+        tracing::info!(
+            "Shutdown signal received ({}); removing BannKenn firewall state",
+            reason
+        );
+        if let Err(e) = cleanup_firewall(&backend).await {
+            tracing::error!("Failed to clean up firewall state during shutdown: {}", e);
+        }
+    }
 
     Ok(())
 }
@@ -431,6 +472,33 @@ async fn enqueue_outbox(outbox: &Arc<Mutex<Outbox>>, payload: OutboxPayload, not
     match enqueue_result {
         Ok(_) => notify.notify_one(),
         Err(e) => tracing::warn!("Failed to persist outbound report: {}", e),
+    }
+}
+
+async fn cleanup_firewall_command() -> Result<()> {
+    let backend = detect_backend();
+    tracing::info!("Detected firewall backend for cleanup: {:?}", backend);
+    cleanup_firewall(&backend).await
+}
+
+async fn shutdown_signal() -> &'static str {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => "SIGINT",
+            _ = terminate.recv() => "SIGTERM",
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install CTRL+C handler");
+        "CTRL+C"
     }
 }
 
@@ -517,10 +585,64 @@ async fn init() -> Result<()> {
 
     config.save()?;
 
+    match install_systemd_unit(&std::env::current_exe()?) {
+        Ok(true) => {
+            println!("Installed systemd unit at {}.", SERVICE_UNIT_PATH);
+            println!("Use 'sudo systemctl enable --now bannkenn-agent' after connect.");
+        }
+        Ok(false) => {
+            println!("Systemd not detected; skipping service unit installation.");
+        }
+        Err(e) if is_permission_denied(&e) => {
+            eprintln!(
+                "Warning: could not install {} (permission denied). Re-run 'sudo bannkenn-agent init' to install the service automatically.",
+                SERVICE_UNIT_PATH
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "Warning: failed to install {} automatically: {}",
+                SERVICE_UNIT_PATH, e
+            );
+        }
+    }
+
     println!("\nConfiguration saved.");
     println!("Run 'bannkenn-agent connect' to register with the dashboard server.");
-    println!("Then run 'bannkenn-agent run' to start monitoring.\n");
+    println!("Then run 'sudo systemctl enable --now bannkenn-agent' to start monitoring.\n");
 
+    Ok(())
+}
+
+async fn uninstall() -> Result<()> {
+    let backend = detect_backend();
+
+    uninstall_systemd_unit()?;
+
+    if let Err(e) = cleanup_firewall(&backend).await {
+        tracing::warn!("Failed to clean up firewall state during uninstall: {}", e);
+    }
+
+    let config_dir = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?
+        .join(".config/bannkenn");
+    match fs::remove_dir_all(&config_dir) {
+        Ok(_) => {}
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+
+    let binary_path = std::env::current_exe()?;
+    match fs::remove_file(&binary_path) {
+        Ok(_) => {}
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+
+    println!(
+        "Removed systemd service, local config, firewall state, and binary at {}.",
+        binary_path.display()
+    );
     Ok(())
 }
 
@@ -580,6 +702,15 @@ fn get_hostname() -> String {
         }
     }
     "bannkenn-agent".to_string()
+}
+
+fn is_permission_denied(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<io::Error>()
+            .map(|io_err| io_err.kind() == io::ErrorKind::PermissionDenied)
+            .unwrap_or(false)
+    })
 }
 
 fn discover_log_candidates() -> Vec<String> {

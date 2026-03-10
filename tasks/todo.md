@@ -446,3 +446,112 @@
   - `cargo test -p bannkenn-agent updater -- --nocapture`
   - `cargo check --workspace`
   - `cargo clippy --workspace -- -D warnings`
+
+## Phase 26 – Offline/restricted-network Docker server build (Codex)
+- [x] Vendor Rust crates required by the workspace for Docker builds
+- [x] Add cargo source replacement config and stop ignoring required lock/config files
+- [x] Update the server container build/runtime path to avoid crates.io and apt during image build
+- [x] Verify the server Docker build path without network dependency
+
+## Review (Phase 26)
+- Implemented:
+  - Vendored the Rust workspace dependencies into `vendor/` and added `.cargo/config.toml` source replacement.
+  - Stopped ignoring reproducibility-critical files such as `Cargo.lock` and `rust-toolchain.toml`; added `.dockerignore` to keep the Docker context tight.
+  - Updated `docker/Dockerfile.server` to use vendored crates with `cargo build --frozen`, removed the builder/runtime `apt-get` steps, and copied the CA bundle from the builder stage.
+  - Added `bannkenn-server healthcheck` and switched the server Compose healthcheck to use the binary instead of `wget`.
+- Verification:
+  - `cargo test -p bannkenn-server --frozen`
+  - `cargo build --release --frozen --bin bannkenn-server`
+  - `docker build --network none -f docker/Dockerfile.server -t bannkenn-server-offline-test .`
+  - `docker run --rm --entrypoint sh bannkenn-server-offline-test -lc 'bannkenn-server >/tmp/server.log 2>&1 & pid=$!; sleep 2; bannkenn-server healthcheck; status=$?; kill $pid; wait $pid 2>/dev/null; exit $status'`
+
+## Phase 27 – Restore dashboard availability on localhost:3021 (Codex)
+- [x] Inspect the current listener/container state and reproduce the dashboard startup failure
+- [x] Fix the immediate cause preventing the dashboard from serving on port 3021
+- [x] Verify `http://localhost:3021/` responds successfully
+
+## Review (Phase 27)
+- Findings:
+  - The compose stack was not running, so nothing was listening on `localhost:3021`.
+  - After bringing it up, both containers were healthy internally, but host requests to `localhost:3021` and `localhost:3022` connected and then hung with no response.
+  - Direct requests from inside the containers succeeded, which isolated the problem to the host-to-Docker bridge/forward path rather than the app processes themselves.
+- Implemented:
+  - Switched `docker/docker-compose.yml` to `network_mode: host` for both `server` and `dashboard` so they bind directly on the Linux host instead of relying on Docker bridge port publishing.
+  - Updated the dashboard server URL to `http://127.0.0.1:3022` for host-networked containers.
+  - Removed the obsolete Compose `version` key while touching the file.
+- Verification:
+  - `docker compose -f docker/docker-compose.yml up -d --build --force-recreate`
+  - `curl -I http://127.0.0.1:3021`
+  - `curl http://127.0.0.1:3021/api/health`
+  - `docker compose -f docker/docker-compose.yml ps`
+
+## Phase 28 – Remove BannKenn nftables rules on agent stop (Codex)
+- [x] Inspect the current firewall lifecycle and confirm stop-time cleanup is missing
+- [x] Add an idempotent firewall cleanup path for BannKenn-managed nftables state
+- [x] Wire cleanup into agent shutdown and a manual CLI cleanup entrypoint
+- [x] Update the installed systemd unit/docs to run cleanup on service stop
+- [x] Verify with targeted Rust tests and syntax/build checks
+
+## Review (Phase 28)
+- Findings:
+  - The agent created BannKenn nftables state on startup but had no teardown path on SIGTERM or `systemctl stop`, so the blocklist rules and set stayed active after the service exited.
+  - The installer-generated unit also had no stop hook, so even a clean systemd stop relied on the process doing nothing special.
+- Implemented:
+  - Added `cleanup_firewall()` for BannKenn-managed nftables state in `agent/src/firewall.rs`.
+  - Cleanup removes BannKenn drop rules from the `inet filter input` and `forward` chains by handle, then deletes the `bannkenn_blocklist` set. The path is idempotent and tolerant of already-missing nft objects.
+  - Added `bannkenn-agent cleanup-firewall` and wired `run()` to catch `SIGTERM`/`Ctrl+C`, abort worker tasks, and remove BannKenn firewall state during shutdown.
+  - Updated `scripts/install.sh` and the README systemd unit example to include `ExecStopPost=-/usr/local/bin/bannkenn-agent cleanup-firewall`.
+  - Documented that stopping the service removes BannKenn-managed nftables rules.
+- Verification:
+  - `cargo fmt --all`
+  - `bash -n scripts/install.sh`
+  - `cargo check -p bannkenn-agent`
+  - `cargo test -p bannkenn-agent`
+  - Added firewall parser unit tests covering BannKenn rule-handle extraction for nft cleanup
+
+## Phase 29 – README lifecycle docs for install/stop/uninstall/update (Codex)
+- [x] Inspect current README lifecycle coverage and identify gaps/inconsistencies
+- [x] Update README with explicit install, stop, uninstall, and update instructions
+- [x] Verify command/path consistency in the revised README
+
+## Review (Phase 29)
+- Findings:
+  - The README covered setup and agent updates, but it did not provide a single clear place for stop and uninstall operations.
+  - The documented source install command pointed to `install.sh` in the repo root, but the actual installer lives at `scripts/install.sh`.
+  - The documented Compose startup command omitted the repo’s actual compose file path under `docker/`.
+- Implemented:
+  - Updated the step-by-step setup flow to use `docker compose -f docker/docker-compose.yml up -d --build`.
+  - Corrected the source installer command to `sudo bash scripts/install.sh`.
+  - Added a `Common Operations` section to `README.md` covering install, stop, update, and uninstall for both the Docker stack and the Linux systemd agent.
+  - Included explicit agent uninstall commands for stopping/disabling the service, cleaning up firewall state, removing the unit, deleting the binary, and removing local config.
+- Verification:
+  - Reviewed the updated README content and checked the command references with `rg` for:
+    - `docker compose -f docker/docker-compose.yml`
+    - `scripts/install.sh`
+    - `systemctl stop bannkenn-agent`
+    - `bannkenn-agent update`
+    - `cleanup-firewall`
+
+## Phase 30 – Move systemd service lifecycle into init/uninstall (Codex)
+- [x] Inspect current init/install flow and define service lifecycle changes
+- [x] Add CLI-managed systemd unit creation during `bannkenn-agent init`
+- [x] Add CLI uninstall flow that disables and removes the service unit
+- [x] Align installer and README with the new lifecycle
+- [x] Verify with Rust checks/tests and shell syntax checks
+
+## Review (Phase 30)
+- Findings:
+  - The service lifecycle was split awkwardly: `scripts/install.sh` created/enabled `bannkenn-agent.service`, while `bannkenn-agent init` only wrote config.
+  - That split made the CLI less self-contained and forced the README/install flow to explain service creation separately from initialization.
+- Implemented:
+  - Added `agent/src/service.rs` with CLI-owned systemd unit rendering/install/removal helpers.
+  - `bannkenn-agent init` now writes config and automatically installs `/etc/systemd/system/bannkenn-agent.service` on Linux/systemd when run with `sudo`.
+  - Added `bannkenn-agent uninstall`, which stops/disables the service, removes the service file, reloads systemd, cleans up BannKenn-managed firewall state, removes local config, and deletes the running agent binary.
+  - Simplified `scripts/install.sh` so it only installs the binary and points users to `bannkenn-agent init` for service creation.
+  - Updated `README.md` to reflect the new `init` and `uninstall` lifecycle.
+- Verification:
+  - `cargo fmt --all`
+  - `bash -n scripts/install.sh`
+  - `cargo check -p bannkenn-agent`
+  - `cargo test -p bannkenn-agent`
+  - `rg -n "bannkenn-agent.service|sudo bannkenn-agent uninstall|enable --now bannkenn-agent|install the systemd unit" README.md scripts/install.sh agent/src -S`
