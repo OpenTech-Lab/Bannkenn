@@ -683,3 +683,36 @@
   - `cargo fmt --all`
   - `cargo check -p bannkenn-agent`
   - `cargo test -p bannkenn-agent`
+
+## Phase 38 – Clarify updater restart behavior in docs (Codex)
+- [x] Confirm whether `bannkenn-agent update` already restarts the active service
+- [x] Make the README answer the manual-restart question explicitly
+- [x] Capture the documentation lesson in `tasks/lessons.md`
+
+## Review (Phase 38)
+- Findings:
+  - The updater already restarts `bannkenn-agent` automatically when the systemd service is active, but the README wording made that easy to miss when asking "do I need to restart manually?"
+- Implemented:
+  - Added explicit README language stating that no manual `systemctl restart` is needed after `sudo bannkenn-agent update` unless the service was inactive.
+  - Recorded the lesson that operational docs should answer the exact next-step question directly, not only implicitly.
+- Verification:
+  - Code inspection: `agent/src/updater.rs`
+
+## Phase 39 – Verify agent stays up after self-update restart (Codex)
+- [x] Inspect the update, restart, and heartbeat paths to identify how `update` can leave an agent offline
+- [x] Harden the updater so it verifies the systemd service remains active after restart
+- [x] Surface a clearer update-time error when the service restarts but does not stay alive
+- [x] Verify with Rust formatting/checks/tests
+
+## Review (Phase 39)
+- Findings:
+  - The updater previously treated `systemctl restart bannkenn-agent` success as sufficient, but that only confirmed the restart command returned successfully, not that the agent stayed alive long enough to resume heartbeats.
+  - That could leave the dashboard showing a heartbeat loss after update with no immediate updater-side signal about the failed steady state.
+- Implemented:
+  - Hardened `agent/src/updater.rs` so the updater polls `systemctl is-active` after restart and requires a short streak of active samples before reporting success.
+  - If the restarted service does not stay active, the updater now returns an error that includes a `systemctl status --no-pager --full bannkenn-agent` snapshot.
+  - Added a README troubleshooting note for the post-update offline case and recorded the lesson in `tasks/lessons.md`.
+- Verification:
+  - `cargo fmt --all`
+  - `cargo check -p bannkenn-agent`
+  - `cargo test -p bannkenn-agent`

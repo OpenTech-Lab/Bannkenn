@@ -3,8 +3,13 @@ use reqwest::Client;
 use std::env;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
+use tokio::time::{sleep, Duration};
 
 const GITHUB_RELEASES_BASE: &str = "https://github.com/OpenTech-Lab/bannkenn/releases";
+const SERVICE_NAME: &str = "bannkenn-agent";
+const SERVICE_RESTART_SETTLE_ATTEMPTS: usize = 10;
+const SERVICE_RESTART_SETTLE_DELAY_MS: u64 = 500;
+const SERVICE_RESTART_REQUIRED_ACTIVE_SAMPLES: usize = 3;
 
 pub async fn update(version: Option<&str>) -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
@@ -136,12 +141,8 @@ fn temp_install_path(target_path: &Path) -> PathBuf {
 }
 
 async fn restart_service_if_active() -> Result<bool> {
-    let active = match Command::new("systemctl")
-        .args(["is-active", "--quiet", "bannkenn-agent"])
-        .status()
-        .await
-    {
-        Ok(status) => status.success(),
+    let active = match service_is_active().await {
+        Ok(active) => active,
         Err(_) => return Ok(false),
     };
 
@@ -150,15 +151,72 @@ async fn restart_service_if_active() -> Result<bool> {
     }
 
     let status = Command::new("systemctl")
-        .args(["restart", "bannkenn-agent"])
+        .args(["restart", SERVICE_NAME])
         .status()
         .await
-        .context("Failed to restart systemd service bannkenn-agent")?;
+        .with_context(|| format!("Failed to restart systemd service {}", SERVICE_NAME))?;
     if !status.success() {
-        return Err(anyhow!("systemctl restart bannkenn-agent failed"));
+        return Err(anyhow!("systemctl restart {} failed", SERVICE_NAME));
     }
 
+    verify_service_stayed_active_after_restart().await?;
     Ok(true)
+}
+
+async fn verify_service_stayed_active_after_restart() -> Result<()> {
+    let mut consecutive_active = 0usize;
+
+    for _ in 0..SERVICE_RESTART_SETTLE_ATTEMPTS {
+        if service_is_active().await.unwrap_or(false) {
+            consecutive_active += 1;
+            if consecutive_active >= SERVICE_RESTART_REQUIRED_ACTIVE_SAMPLES {
+                return Ok(());
+            }
+        } else {
+            consecutive_active = 0;
+        }
+        sleep(Duration::from_millis(SERVICE_RESTART_SETTLE_DELAY_MS)).await;
+    }
+
+    let status = service_status_snapshot().await.unwrap_or_else(|err| {
+        format!(
+            "unable to collect `systemctl status {}`: {}",
+            SERVICE_NAME, err
+        )
+    });
+
+    Err(anyhow!(
+        "{} restarted but did not stay active.\n{}",
+        SERVICE_NAME,
+        status.trim()
+    ))
+}
+
+async fn service_is_active() -> Result<bool> {
+    let status = Command::new("systemctl")
+        .args(["is-active", "--quiet", SERVICE_NAME])
+        .status()
+        .await
+        .with_context(|| format!("Failed to run systemctl is-active {}", SERVICE_NAME))?;
+    Ok(status.success())
+}
+
+async fn service_status_snapshot() -> Result<String> {
+    let output = Command::new("systemctl")
+        .args(["status", "--no-pager", "--full", SERVICE_NAME])
+        .output()
+        .await
+        .with_context(|| format!("Failed to run systemctl status {}", SERVICE_NAME))?;
+
+    let mut text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if text.is_empty() {
+        text = stderr;
+    } else if !stderr.is_empty() {
+        text.push('\n');
+        text.push_str(&stderr);
+    }
+    Ok(text)
 }
 
 #[cfg(test)]

@@ -77,6 +77,7 @@ sudo bannkenn-agent update v1.3.18
 ```
 
 `update` downloads the correct release asset for the current platform, replaces the installed binary, and restarts `bannkenn-agent` automatically when the systemd service is active.
+You do not need to run `systemctl restart bannkenn-agent` manually after `sudo bannkenn-agent update` unless the service was inactive when you ran the updater.
 
 Linux ARM64:
 
@@ -191,6 +192,8 @@ sudo bannkenn-agent update v1.3.18
 ```
 
 The updater replaces `/usr/local/bin/bannkenn-agent` and restarts `bannkenn-agent` automatically when the systemd service is active.
+If the service was already active, no extra manual restart step is required after `sudo bannkenn-agent update`.
+If the updater reports that `bannkenn-agent` did not stay active after restart, inspect `sudo systemctl status bannkenn-agent --no-pager` and `sudo journalctl -u bannkenn-agent -n 100 --no-pager`.
 
 To refresh the server/dashboard containers after pulling new code:
 

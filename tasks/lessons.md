@@ -107,3 +107,11 @@
 - Floating `stable` in GitHub Actions can diverge from local rustfmt behavior and cause recurring `cargo fmt --check` failures.
 - Pin a specific Rust toolchain version in workflow and mirror it with `rust-toolchain.toml`.
 - After changing workflow/toolchain, always re-run `cargo fmt --all -- --check` locally to catch formatting differences before push.
+
+### README operational steps must answer the exact user question explicitly
+- If a command has important automatic follow-up behavior (for example, `update` auto-restarting a service), do not rely on a generic sentence alone.
+- State the user-facing operational answer directly in README terms such as "you do not need to restart manually" so the expected next step is unambiguous.
+
+### Updaters that restart services must verify steady-state health, not just restart command success
+- A successful `systemctl restart` exit code does not prove the service stayed alive long enough to resume real work such as heartbeats.
+- After self-updating a running service, verify post-restart liveness with a short `is-active` settle window and surface a status snapshot if the service dies immediately.
