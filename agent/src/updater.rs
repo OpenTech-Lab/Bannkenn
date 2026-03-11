@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use reqwest::Client;
+use reqwest::{header::LOCATION, redirect::Policy, Client};
 use std::env;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
@@ -14,6 +14,12 @@ const SERVICE_RESTART_REQUIRED_ACTIVE_SAMPLES: usize = 3;
 pub async fn update(version: Option<&str>) -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
     let asset_name = release_asset_name()?;
+    let target_version = resolve_target_version(version, asset_name).await?;
+    if same_release_version(current_version, &target_version) {
+        println!("bannkenn-agent is already up to date ({})", current_version);
+        return Ok(());
+    }
+
     let download_url = release_download_url(version, asset_name)?;
     let target_path = env::current_exe().context("Could not determine current executable path")?;
 
@@ -42,7 +48,8 @@ pub async fn update(version: Option<&str>) -> Result<()> {
 
     let resolved_url = response.url().to_string();
     let bytes = response.bytes().await?.to_vec();
-    let resolved_release = resolved_release_label(&resolved_url);
+    let resolved_release =
+        release_version_from_url(&resolved_url).unwrap_or_else(|| target_version.clone());
 
     install_binary(&target_path, &bytes).await?;
     let restarted = restart_service_if_active().await?;
@@ -60,6 +67,16 @@ pub async fn update(version: Option<&str>) -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn resolve_target_version(version: Option<&str>, asset_name: &str) -> Result<String> {
+    if let Some(version) = version {
+        return Ok(strip_version_prefix(&normalize_version(version)?).to_string());
+    }
+
+    probe_latest_release_version(asset_name)
+        .await?
+        .ok_or_else(|| anyhow!("Failed to determine the latest release version"))
 }
 
 fn release_asset_name() -> Result<&'static str> {
@@ -103,13 +120,11 @@ fn normalize_version(version: &str) -> Result<String> {
     Ok(format!("v{}", version))
 }
 
-fn resolved_release_label(resolved_url: &str) -> String {
-    resolved_url
-        .split("/download/")
+fn release_version_from_url(url: &str) -> Option<String> {
+    url.split("/download/")
         .nth(1)
         .and_then(|rest| rest.split('/').next())
-        .unwrap_or("latest")
-        .to_string()
+        .map(|version| strip_version_prefix(version).to_string())
 }
 
 async fn install_binary(target_path: &Path, bytes: &[u8]) -> Result<()> {
@@ -130,6 +145,29 @@ async fn install_binary(target_path: &Path, bytes: &[u8]) -> Result<()> {
         .with_context(|| format!("Failed to replace {}", target_path.display()))?;
 
     Ok(())
+}
+
+async fn probe_latest_release_version(asset_name: &str) -> Result<Option<String>> {
+    let url = release_download_url(None, asset_name)?;
+    let client = Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .context("Failed to build HTTP client for release probe")?;
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("Failed to probe {}", url))?;
+
+    if response.status().is_redirection() {
+        return Ok(response
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(release_version_from_url));
+    }
+
+    Ok(release_version_from_url(response.url().as_str()))
 }
 
 fn temp_install_path(target_path: &Path) -> PathBuf {
@@ -219,6 +257,14 @@ async fn service_status_snapshot() -> Result<String> {
     Ok(text)
 }
 
+fn same_release_version(current: &str, release: &str) -> bool {
+    strip_version_prefix(current) == strip_version_prefix(release)
+}
+
+fn strip_version_prefix(version: &str) -> &str {
+    version.trim().strip_prefix('v').unwrap_or(version.trim())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,10 +298,17 @@ mod tests {
     #[test]
     fn resolved_release_is_parsed_from_redirect_url() {
         assert_eq!(
-            resolved_release_label(
+            release_version_from_url(
                 "https://github.com/OpenTech-Lab/bannkenn/releases/download/v1.3.18/bannkenn-agent-linux-x64"
             ),
-            "v1.3.18"
+            Some("1.3.18".to_string())
         );
+    }
+
+    #[test]
+    fn same_release_version_ignores_v_prefix() {
+        assert!(same_release_version("1.3.23", "v1.3.23"));
+        assert!(same_release_version("v1.3.23", "1.3.23"));
+        assert!(!same_release_version("1.3.23", "1.3.24"));
     }
 }

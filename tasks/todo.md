@@ -716,3 +716,21 @@
   - `cargo fmt --all`
   - `cargo check -p bannkenn-agent`
   - `cargo test -p bannkenn-agent`
+
+## Phase 40 – Skip no-op self-update output when already latest (Codex)
+- [x] Inspect the updater version-resolution path and confirm why it prints `-> latest`
+- [x] Resolve the target release version before install and skip no-op updates
+- [x] Record the updater UX lesson in `tasks/lessons.md`
+- [x] Verify with Rust formatting/checks/tests
+
+## Review (Phase 40)
+- Findings:
+  - The updater only derived a display label from the final download URL, which can collapse to `latest` and could not distinguish a real upgrade from a no-op latest-version check.
+- Implemented:
+  - Added target-version resolution before download/install, including a latest-release probe that extracts the actual release version from GitHub’s redirect.
+  - The updater now exits early with `bannkenn-agent is already up to date (...)` when the current version already matches the requested/latest release, so it does not replace the binary or restart the service unnecessarily.
+  - Added regression tests for release-version parsing and `v`-prefix-insensitive version comparison.
+- Verification:
+  - `cargo fmt --all`
+  - `cargo check -p bannkenn-agent`
+  - `cargo test -p bannkenn-agent updater`

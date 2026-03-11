@@ -115,3 +115,7 @@
 ### Updaters that restart services must verify steady-state health, not just restart command success
 - A successful `systemctl restart` exit code does not prove the service stayed alive long enough to resume real work such as heartbeats.
 - After self-updating a running service, verify post-restart liveness with a short `is-active` settle window and surface a status snapshot if the service dies immediately.
+
+### Updaters must distinguish "already current" from a real upgrade
+- Do not print "Updated X -> latest" when the installed version already matches the resolved latest release.
+- Resolve the target release version before installation, skip the replace/restart path on a no-op, and print an explicit "already up to date" message instead.
