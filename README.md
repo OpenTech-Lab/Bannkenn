@@ -47,6 +47,59 @@ curl http://localhost:3022/api/v1/health
 Open dashboard:
 - `http://localhost:3021`
 
+### Optional: HTTPS via existing nginx
+
+If this host already has an nginx reverse proxy, reuse that nginx instead of adding another nginx container just for BannKenn.
+
+The current compose file uses host networking, so nginx can proxy directly to:
+- server API: `127.0.0.1:3022`
+- dashboard UI: `127.0.0.1:3021`
+
+Important: with the current compose file, nginx cannot listen on host `3022` or `3021` while BannKenn is already bound to those same host ports. This means the following is **not** valid:
+- `https://SERVER_IP:3022` -> nginx -> `127.0.0.1:3022`
+- `https://SERVER_IP:3021` -> nginx -> `127.0.0.1:3021`
+
+Without a domain name, do **not** proxy both services behind one public IP/port with a shared `/api/` split, because the Next.js dashboard already uses its own `/api/*` routes.
+
+Use one of these layouts:
+
+1. Keep the current compose file unchanged.
+
+Recommended for the current repo state. Use separate external TLS ports in nginx:
+- `https://SERVER_IP:1234` -> BannKenn server API on `127.0.0.1:3022`
+- `https://SERVER_IP:1235` -> BannKenn dashboard on `127.0.0.1:3021`
+
+2. Keep the public port numbers `3022` and `3021`.
+
+Only do this if you first move the backend services to different internal ports so nginx can own the public ports, for example:
+- backend server bind: `127.0.0.1:4022`
+- backend dashboard bind: `127.0.0.1:4021`
+- nginx public API: `https://SERVER_IP:3022` -> `127.0.0.1:4022`
+- nginx public dashboard: `https://SERVER_IP:3021` -> `127.0.0.1:4021`
+
+Example config:
+- `deploy/nginx/bannkenn-tls.example.conf`
+
+Generate an IP-SAN certificate for nginx:
+
+```bash
+sudo bash deploy/nginx/generate-ip-cert.sh 192.0.2.10 /etc/nginx/ssl
+```
+
+If you terminate TLS in nginx, set the agent `server_url` to the API IP+port, for example:
+
+```bash
+https://192.0.2.10:1234
+```
+
+If you switch to the second layout where nginx owns public port `3022`, then use:
+
+```bash
+https://192.0.2.10:3022
+```
+
+If you use self-signed certificates or a private CA, the agent and browser must trust that CA/certificate. Generate the cert with the server IP in the SAN extension.
+
 ### 3. Install agent binary (choose one)
 
 Option A: build from source (Linux/systemd path)
@@ -102,6 +155,10 @@ sudo bannkenn-agent init
 ```
 
 `init` now auto-detects available log sources, auto-selects a log file path, writes `/etc/systemd/system/bannkenn-agent.service` automatically on Linux/systemd when run with `sudo`, and attempts dashboard registration immediately.
+
+If you put nginx/TLS in front of BannKenn, enter the API URL here, not the dashboard URL:
+- correct: `https://192.0.2.10:1234`
+- wrong: `https://192.0.2.10:1235`
 
 If the dashboard server was unreachable during `init`, retry registration later with:
 

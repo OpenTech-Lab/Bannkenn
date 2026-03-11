@@ -119,3 +119,7 @@
 ### Updaters must distinguish "already current" from a real upgrade
 - Do not print "Updated X -> latest" when the installed version already matches the resolved latest release.
 - Resolve the target release version before installation, skip the replace/restart path on a no-op, and print an explicit "already up to date" message instead.
+
+### Reverse-proxy recommendations must not assume a domain exists
+- If the user is operating on raw IPs or explicitly says they will not use a domain, do not default to hostname-based TLS examples.
+- For single-IP deployments without host-based routing, prefer separate external TLS ports for each service and call out certificate trust requirements for IP/SAN or private CA setups.

@@ -766,3 +766,18 @@
   - `cargo check --workspace`
   - `cargo test --workspace`
   - `npm run build` in `dashboard/`
+
+## Phase 42 – Nginx TLS reverse-proxy path for BannKenn (Codex)
+- [x] Add an nginx TLS example config for the current host-network BannKenn deployment
+- [x] Document the no-domain IP+port setup and agent `server_url` guidance in README
+- [x] Verify config syntax if nginx is available locally and record results
+
+## Review (Phase 42)
+- Added `deploy/nginx/bannkenn-tls.example.conf` for the current host-network deployment:
+  - `https://SERVER_IP:1234` -> `127.0.0.1:3022` (BannKenn API)
+  - `https://SERVER_IP:1235` -> `127.0.0.1:3021` (dashboard)
+- Reused a single certificate across both TLS ports because they terminate on the same server IP.
+- Added `deploy/nginx/generate-ip-cert.sh` to generate a self-signed IP-SAN certificate for nginx without requiring a domain.
+- Updated `README.md` with the no-domain nginx/TLS flow, certificate generation command, and the correct agent `server_url` target (`https://SERVER_IP:1234`).
+- Verified `deploy/nginx/generate-ip-cert.sh` with `bash -n` and by generating a temporary certificate whose SAN includes `IP Address:192.0.2.10`.
+- Verified the nginx config with a disposable `nginx:alpine` container running `nginx -t -c /etc/nginx/nginx.conf`.
