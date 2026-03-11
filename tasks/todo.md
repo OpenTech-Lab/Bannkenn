@@ -218,6 +218,20 @@
   - Added `GET /api/v1/agents/:id/decisions?limit=...` to return decisions for one agent source.
   - Added DB helpers `get_agent_name_by_id` and `list_decisions_by_source`.
 - Dashboard:
+
+## Phase 16 – Investigate agent outbound-request blocking behavior (Codex)
+- [x] Review project lessons and task history for prior firewall/network behavior decisions
+- [x] Inspect agent firewall implementation for inbound vs outbound chain handling
+- [x] Inspect agent HTTP client/runtime paths to confirm expected outbound server communication
+- [x] Document the conclusion in this task file so the behavior is explicit
+
+## Review (Phase 16)
+- The agent does make outbound HTTP(S) requests to the configured dashboard/server using `reqwest` for registration, heartbeats, decision sync, telemetry, and updates.
+- The firewall implementation only inserts drop rules for source IPs into inbound/forward paths:
+  - nftables: dedicated `inet bannkenn` table with `input` and `forward` chains only
+  - iptables: `INPUT` and `FORWARD` chains only
+- No `OUTPUT` chain or egress-deny logic exists in the agent codebase, so BannKenn does not generally block outbound requests initiated by the host/agent.
+- A blocked remote IP can still be dropped when it is the packet source on inbound/forward traffic, but the agent does not implement a general outbound request blocker.
   - Home page agent names now link to `/agents/:id`.
   - Added proxy route `GET /api/agents/:id/decisions`.
   - Added proxy route `GET /api/ip-intel?ip=...` using `ipwho.is` with timeout + in-memory cache + graceful fallback.
@@ -734,3 +748,21 @@
   - `cargo fmt --all`
   - `cargo check -p bannkenn-agent`
   - `cargo test -p bannkenn-agent updater`
+
+## Phase 41 – Central whitelist for agent block bypass (Codex)
+- [x] Inspect current server decision storage, agent sync/enforcement flow, and dashboard admin mutation paths
+- [x] Add server-side whitelist storage and list/create/delete API endpoints
+- [x] Update agent sync/enforcement to honor whitelist entries and remove local blocks for whitelisted IPs
+- [x] Add dashboard whitelist list/editor UI with create/delete actions
+- [x] Verify with targeted Rust/Next checks/tests and document the result
+
+## Review (Phase 41)
+- Implemented a central `whitelist_entries` server table with `GET /api/v1/whitelist`, `POST /api/v1/whitelist`, and `DELETE /api/v1/whitelist/:id`.
+- New whitelist inserts now purge existing decision rows for that exact IP, and future decision inserts are skipped while the IP remains whitelisted.
+- The agent now syncs whitelist entries, caches them offline, skips whitelist hits in the detection pipeline, skips server-synced decisions for whitelisted IPs, and actively removes existing local firewall blocks for whitelisted IPs on the next sync/startup.
+- The dashboard home page now shows a whitelist section with add, note edit, and remove controls, backed by new Next.js API proxy routes.
+- Verification:
+  - `cargo fmt --all`
+  - `cargo check --workspace`
+  - `cargo test --workspace`
+  - `npm run build` in `dashboard/`

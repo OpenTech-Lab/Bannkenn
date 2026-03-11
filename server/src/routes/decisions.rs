@@ -22,7 +22,8 @@ pub struct CreateDecisionRequest {
 
 #[derive(Debug, Serialize)]
 pub struct CreateDecisionResponse {
-    pub id: i64,
+    pub id: Option<i64>,
+    pub skipped: bool,
 }
 
 pub async fn create(
@@ -36,7 +37,19 @@ pub async fn create(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok((StatusCode::CREATED, Json(CreateDecisionResponse { id })))
+    let status = if id.is_some() {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+
+    Ok((
+        status,
+        Json(CreateDecisionResponse {
+            id,
+            skipped: status == StatusCode::OK,
+        }),
+    ))
 }
 
 #[derive(Debug, Deserialize)]

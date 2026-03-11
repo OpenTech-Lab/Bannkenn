@@ -69,6 +69,7 @@ pub async fn watch(
     tx: mpsc::Sender<SecurityEvent>,
     known_blocked_ips: Arc<RwLock<HashMap<String, String>>>,
     enforced_blocked_ips: Arc<RwLock<HashSet<String>>>,
+    whitelisted_ips: Arc<RwLock<HashSet<String>>>,
     shared_risk_snapshot: Arc<RwLock<SharedRiskSnapshot>>,
     mut block_outcomes_rx: mpsc::Receiver<BlockOutcome>,
 ) -> Result<()> {
@@ -162,6 +163,7 @@ pub async fn watch(
                             &tx,
                             &known_blocked_ips,
                             &enforced_blocked_ips,
+                            &whitelisted_ips,
                             &shared_risk_snapshot,
                         )
                         .await;
@@ -385,6 +387,7 @@ async fn process_failed_attempt(
     tx: &mpsc::Sender<SecurityEvent>,
     known_blocked_ips: &Arc<RwLock<HashMap<String, String>>>,
     enforced_blocked_ips: &Arc<RwLock<HashSet<String>>>,
+    whitelisted_ips: &Arc<RwLock<HashSet<String>>>,
     shared_risk_snapshot: &Arc<RwLock<SharedRiskSnapshot>>,
 ) {
     if should_skip_local_firewall_enforcement(&raw.ip) {
@@ -392,6 +395,11 @@ async fn process_failed_attempt(
             "Ignoring local/reserved source address {}; skipping detection pipeline",
             raw.ip
         );
+        return;
+    }
+
+    if whitelisted_ips.read().await.contains(&raw.ip) {
+        tracing::debug!("Ignoring whitelisted source address {}", raw.ip);
         return;
     }
 
@@ -765,6 +773,7 @@ mod tests {
             "ipsum_feed".to_string(),
         )])));
         let enforced_blocked_ips = Arc::new(RwLock::new(HashSet::new()));
+        let whitelisted_ips = Arc::new(RwLock::new(HashSet::new()));
         let shared_risk_snapshot = Arc::new(RwLock::new(SharedRiskSnapshot::default()));
 
         process_failed_attempt(
@@ -779,6 +788,7 @@ mod tests {
             &tx,
             &known_blocked_ips,
             &enforced_blocked_ips,
+            &whitelisted_ips,
             &shared_risk_snapshot,
         )
         .await;
@@ -799,6 +809,7 @@ mod tests {
             &tx,
             &known_blocked_ips,
             &enforced_blocked_ips,
+            &whitelisted_ips,
             &shared_risk_snapshot,
         )
         .await;
@@ -827,6 +838,7 @@ mod tests {
             &tx,
             &known_blocked_ips,
             &enforced_blocked_ips,
+            &whitelisted_ips,
             &shared_risk_snapshot,
         )
         .await;
@@ -858,6 +870,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let known_blocked_ips = Arc::new(RwLock::new(HashMap::new()));
         let enforced_blocked_ips = Arc::new(RwLock::new(HashSet::new()));
+        let whitelisted_ips = Arc::new(RwLock::new(HashSet::new()));
         let shared_risk_snapshot = Arc::new(RwLock::new(SharedRiskSnapshot::default()));
 
         process_failed_attempt(
@@ -872,6 +885,7 @@ mod tests {
             &tx,
             &known_blocked_ips,
             &enforced_blocked_ips,
+            &whitelisted_ips,
             &shared_risk_snapshot,
         )
         .await;
@@ -890,6 +904,7 @@ mod tests {
             &tx,
             &known_blocked_ips,
             &enforced_blocked_ips,
+            &whitelisted_ips,
             &shared_risk_snapshot,
         )
         .await;
@@ -909,6 +924,7 @@ mod tests {
             &tx,
             &known_blocked_ips,
             &enforced_blocked_ips,
+            &whitelisted_ips,
             &shared_risk_snapshot,
         )
         .await;
@@ -937,6 +953,7 @@ mod tests {
             &tx,
             &known_blocked_ips,
             &enforced_blocked_ips,
+            &whitelisted_ips,
             &shared_risk_snapshot,
         )
         .await;
@@ -971,6 +988,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let known_blocked_ips = Arc::new(RwLock::new(HashMap::new()));
         let enforced_blocked_ips = Arc::new(RwLock::new(HashSet::new()));
+        let whitelisted_ips = Arc::new(RwLock::new(HashSet::new()));
         let shared_risk_snapshot = Arc::new(RwLock::new(SharedRiskSnapshot {
             categories: vec![SharedRiskCategory {
                 category: "Invalid SSH user".to_string(),
@@ -996,6 +1014,7 @@ mod tests {
             &tx,
             &known_blocked_ips,
             &enforced_blocked_ips,
+            &whitelisted_ips,
             &shared_risk_snapshot,
         )
         .await;
@@ -1029,6 +1048,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let known_blocked_ips = Arc::new(RwLock::new(HashMap::new()));
         let enforced_blocked_ips = Arc::new(RwLock::new(HashSet::new()));
+        let whitelisted_ips = Arc::new(RwLock::new(HashSet::new()));
         let shared_risk_snapshot = Arc::new(RwLock::new(SharedRiskSnapshot::default()));
 
         process_failed_attempt(
@@ -1043,6 +1063,7 @@ mod tests {
             &tx,
             &known_blocked_ips,
             &enforced_blocked_ips,
+            &whitelisted_ips,
             &shared_risk_snapshot,
         )
         .await;
@@ -1059,5 +1080,50 @@ mod tests {
             !ip_attempts.contains_key(&raw.ip),
             "loopback detections should not create sliding-window state"
         );
+    }
+
+    #[tokio::test]
+    async fn whitelisted_addresses_never_enter_the_block_pipeline() {
+        let config = AgentConfig {
+            threshold: 1,
+            ..AgentConfig::default()
+        };
+        let raw = RawDetection {
+            ip: "198.51.100.88".to_string(),
+            reason: "Failed SSH password".to_string(),
+            log_path: "/var/log/auth.log".to_string(),
+        };
+        let mut ip_attempts: HashMap<String, VecDeque<Instant>> = HashMap::new();
+        let mut pending_local_blocks = HashSet::new();
+        let mut burst_detector = BurstDetector::new();
+        let mut host_risk = HostRiskLevel::new();
+        let mut surge_detector = EventSurgeDetector::new();
+        let mut campaign_tracker = LocalCampaignTracker::new();
+        let (tx, mut rx) = mpsc::channel(8);
+        let known_blocked_ips = Arc::new(RwLock::new(HashMap::new()));
+        let enforced_blocked_ips = Arc::new(RwLock::new(HashSet::new()));
+        let whitelisted_ips = Arc::new(RwLock::new(HashSet::from([raw.ip.clone()])));
+        let shared_risk_snapshot = Arc::new(RwLock::new(SharedRiskSnapshot::default()));
+
+        process_failed_attempt(
+            &raw,
+            &mut ip_attempts,
+            &mut pending_local_blocks,
+            &mut burst_detector,
+            &mut host_risk,
+            &mut surge_detector,
+            &mut campaign_tracker,
+            &config,
+            &tx,
+            &known_blocked_ips,
+            &enforced_blocked_ips,
+            &whitelisted_ips,
+            &shared_risk_snapshot,
+        )
+        .await;
+
+        assert!(rx.try_recv().is_err());
+        assert!(!pending_local_blocks.contains(&raw.ip));
+        assert!(!ip_attempts.contains_key(&raw.ip));
     }
 }

@@ -66,12 +66,20 @@ interface SshLoginEvent {
   created_at: string;
 }
 
+interface WhitelistEntry {
+  id: number;
+  ip: string;
+  note: string | null;
+  created_at: string;
+}
+
 const POLL_INTERVAL = 10_000;
 
 export default function Dashboard() {
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [agents, setAgents] = useState<AgentStatus[]>([]);
   const [sshLogins, setSshLogins] = useState<SshLoginEvent[]>([]);
+  const [whitelist, setWhitelist] = useState<WhitelistEntry[]>([]);
   const [activityTab, setActivityTab] = useState<'decisions' | 'ssh'>('decisions');
   const [health, setHealth] = useState<'ok' | 'error' | 'loading'>('loading');
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -80,14 +88,19 @@ export default function Dashboard() {
   const [editingAgent, setEditingAgent] = useState<AgentStatus | null>(null);
   const [editNickname, setEditNickname] = useState('');
   const [editLoading, setEditLoading] = useState(false);
+  const [whitelistIp, setWhitelistIp] = useState('');
+  const [whitelistNote, setWhitelistNote] = useState('');
+  const [editingWhitelistId, setEditingWhitelistId] = useState<number | null>(null);
+  const [whitelistSaving, setWhitelistSaving] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
-      const [healthRes, decisionsRes, agentsRes, sshLoginsRes] = await Promise.all([
+      const [healthRes, decisionsRes, agentsRes, sshLoginsRes, whitelistRes] = await Promise.all([
         fetch('/api/health'),
         fetch('/api/decisions'),
         fetch('/api/agents'),
         fetch('/api/ssh-logins'),
+        fetch('/api/whitelist'),
       ]);
 
       if (healthRes.ok) {
@@ -107,6 +120,10 @@ export default function Dashboard() {
 
       if (sshLoginsRes.ok) {
         setSshLogins(await sshLoginsRes.json());
+      }
+
+      if (whitelistRes.ok) {
+        setWhitelist(await whitelistRes.json());
       }
 
       setLastUpdated(new Date());
@@ -157,6 +174,63 @@ export default function Dashboard() {
         fetchData();
       } else {
         toast.error('Failed to remove agent');
+      }
+    } catch {
+      toast.error('Network error');
+    }
+  };
+
+  const resetWhitelistForm = () => {
+    setWhitelistIp('');
+    setWhitelistNote('');
+    setEditingWhitelistId(null);
+  };
+
+  const openWhitelistEdit = (entry: WhitelistEntry) => {
+    setWhitelistIp(entry.ip);
+    setWhitelistNote(entry.note ?? '');
+    setEditingWhitelistId(entry.id);
+  };
+
+  const handleWhitelistSave = async () => {
+    if (!whitelistIp.trim()) return;
+    setWhitelistSaving(true);
+    try {
+      const res = await fetch('/api/whitelist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ip: whitelistIp.trim(),
+          note: whitelistNote.trim() || undefined,
+        }),
+      });
+      if (res.ok) {
+        toast.success(editingWhitelistId ? 'Whitelist entry updated' : 'Whitelist entry added');
+        resetWhitelistForm();
+        fetchData();
+      } else if (res.status === 400) {
+        toast.error('Enter a valid IP address');
+      } else {
+        toast.error('Failed to save whitelist entry');
+      }
+    } catch {
+      toast.error('Network error');
+    } finally {
+      setWhitelistSaving(false);
+    }
+  };
+
+  const handleWhitelistRemove = async (entry: WhitelistEntry) => {
+    try {
+      const res = await fetch(`/api/whitelist/${entry.id}`, { method: 'DELETE' });
+      if (res.ok) {
+        toast.success(`Removed ${entry.ip} from whitelist`);
+        if (editingWhitelistId === entry.id) {
+          resetWhitelistForm();
+        }
+        fetchData();
+      } else {
+        toast.error('Failed to remove whitelist entry');
       }
     } catch {
       toast.error('Network error');
@@ -342,6 +416,136 @@ export default function Dashboard() {
               )}
             </TableBody>
           </Table>
+        </div>
+      </div>
+
+      {/* Whitelist */}
+      <div>
+        <div className="flex flex-col gap-2 mb-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
+              Whitelist
+            </h2>
+            <p className="text-xs text-muted-foreground mt-1">
+              Whitelisted IPs are skipped by agents and removed from local firewall blocks on the next sync.
+            </p>
+          </div>
+          <span className="text-xs text-muted-foreground">
+            {whitelist.length} entr{whitelist.length === 1 ? 'y' : 'ies'}
+          </span>
+        </div>
+        <div className="rounded-xl border border-border bg-card/30 p-4 space-y-4">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,220px)_minmax(0,1fr)_auto]">
+            <Input
+              value={whitelistIp}
+              onChange={(e) => setWhitelistIp(e.target.value)}
+              placeholder="203.0.113.4"
+              disabled={whitelistSaving || editingWhitelistId !== null}
+            />
+            <Input
+              value={whitelistNote}
+              onChange={(e) => setWhitelistNote(e.target.value)}
+              placeholder="Office IP, home IP, monitoring node…"
+              disabled={whitelistSaving}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleWhitelistSave();
+              }}
+            />
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                onClick={handleWhitelistSave}
+                disabled={whitelistSaving || !whitelistIp.trim()}
+              >
+                {whitelistSaving ? 'Saving…' : editingWhitelistId ? 'Update note' : 'Add IP'}
+              </Button>
+              {editingWhitelistId !== null && (
+                <Button variant="outline" size="sm" onClick={resetWhitelistForm} disabled={whitelistSaving}>
+                  Cancel
+                </Button>
+              )}
+            </div>
+          </div>
+          {editingWhitelistId !== null && (
+            <p className="text-xs text-muted-foreground">
+              IP changes use remove + add. Edit mode updates the note for the selected entry.
+            </p>
+          )}
+          <div className="rounded-lg border border-border overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>IP</TableHead>
+                  <TableHead>Note</TableHead>
+                  <TableHead>Added</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {whitelist.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center py-10 text-muted-foreground">
+                      No whitelist entries yet
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  whitelist.map((entry) => (
+                    <TableRow key={entry.id}>
+                      <TableCell className="font-mono text-sm">{entry.ip}</TableCell>
+                      <TableCell className="text-muted-foreground text-sm">
+                        {entry.note?.trim() || '—'}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
+                        {new Date(entry.created_at).toLocaleString()}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => openWhitelistEdit(entry)}
+                            className="h-7 px-2 text-xs"
+                          >
+                            <Pencil className="h-3 w-3 mr-1" />
+                            Edit
+                          </Button>
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
+                              >
+                                <Trash2 className="h-3 w-3 mr-1" />
+                                Remove
+                              </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>Remove whitelist entry?</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                  BannKenn will be allowed to block <strong>{entry.ip}</strong> again after agents sync.
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                <AlertDialogAction
+                                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                  onClick={() => handleWhitelistRemove(entry)}
+                                >
+                                  Remove
+                                </AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
         </div>
       </div>
 

@@ -22,9 +22,10 @@ pub async fn fetch_ipsum_feed(db: Arc<Db>) -> anyhow::Result<()> {
                         .insert_decision(ip, "ipsum_feed", "block", "ipsum_feed")
                         .await
                     {
-                        Ok(_) => {
+                        Ok(Some(_)) => {
                             // Successfully inserted
                         }
+                        Ok(None) => info!("Skipping whitelisted IP from ipsum feed: {}", ip),
                         Err(e) => {
                             // Log but continue processing other IPs
                             error!("Failed to insert decision for IP {}: {}", ip, e);
@@ -53,7 +54,8 @@ async fn fetch_firehol_feed(db: Arc<Db>, url: &str, source: &str) -> anyhow::Res
             continue;
         }
         match db.insert_decision(entry, source, "block", source).await {
-            Ok(_) => {}
+            Ok(Some(_)) => {}
+            Ok(None) => info!("Skipping whitelisted entry from {} feed: {}", source, entry),
             Err(e) => {
                 error!("Failed to insert decision for {}: {}", entry, e);
             }

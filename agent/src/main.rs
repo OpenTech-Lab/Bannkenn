@@ -33,7 +33,7 @@ use crate::client::ApiClient;
 use crate::config::{default_runtime_campaign_config, AgentConfig, OfflineAgentState};
 use crate::firewall::{
     block_ip, cleanup_firewall, detect_backend, init_firewall,
-    should_skip_local_firewall_enforcement,
+    should_skip_local_firewall_enforcement, unblock_ip,
 };
 use crate::outbox::{flush_pending, Outbox, OutboxPayload};
 use crate::service::{install_systemd_unit, uninstall_systemd_unit, SERVICE_UNIT_PATH};
@@ -150,20 +150,60 @@ async fn run() -> Result<()> {
     let known_blocked_ips: Arc<RwLock<HashMap<String, String>>> =
         Arc::new(RwLock::new(offline_state.known_blocked_ips.clone()));
     let enforced_blocked_ips: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
+    let whitelisted_ips: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(
+        offline_state.whitelisted_ips.iter().cloned().collect(),
+    ));
     let shared_risk_snapshot: Arc<RwLock<SharedRiskSnapshot>> =
         Arc::new(RwLock::new(offline_state.shared_risk_snapshot.clone()));
+
+    {
+        let whitelist_snapshot = whitelisted_ips.read().await.clone();
+        if !whitelist_snapshot.is_empty() {
+            known_blocked_ips
+                .write()
+                .await
+                .retain(|ip, _| !whitelist_snapshot.contains(ip));
+            tracing::info!(
+                "Loaded {} whitelisted IP(s) from offline cache",
+                whitelist_snapshot.len()
+            );
+        }
+    }
+
+    let init_client = ApiClient::new(config.server_url.clone(), config.jwt_token.clone());
+    match init_client.fetch_whitelist().await {
+        Ok(entries) => {
+            sync::apply_whitelist_snapshot(
+                entries,
+                &known_blocked_ips,
+                &enforced_blocked_ips,
+                &whitelisted_ips,
+                &shared_risk_snapshot,
+                &backend,
+            )
+            .await;
+        }
+        Err(e) => tracing::warn!("Failed to load initial whitelist: {}", e),
+    }
 
     if !offline_state.known_blocked_ips.is_empty() {
         let mut restored = 0u32;
         let mut failed = 0u32;
-        let mut skipped = 0u32;
+        let mut skipped_local = 0u32;
+        let mut skipped_whitelist = 0u32;
+        let whitelist_snapshot = whitelisted_ips.read().await.clone();
         for ip in offline_state.known_blocked_ips.keys() {
+            if whitelist_snapshot.contains(ip) {
+                tracing::info!("cache: skipping restore for whitelisted address {}", ip);
+                skipped_whitelist += 1;
+                continue;
+            }
             if should_skip_local_firewall_enforcement(ip) {
                 tracing::warn!(
                     "cache: skipping firewall restore for local/reserved address {}",
                     ip
                 );
-                skipped += 1;
+                skipped_local += 1;
                 continue;
             }
             match block_ip(ip, &backend).await {
@@ -178,37 +218,47 @@ async fn run() -> Result<()> {
             }
         }
         tracing::info!(
-            "Loaded cached offline state: {} blocked IP(s), shared-risk categories={}, restored {} firewall rule(s) ({} failed, {} skipped local/reserved)",
+            "Loaded cached offline state: {} blocked IP(s), shared-risk categories={}, restored {} firewall rule(s) ({} failed, {} skipped local/reserved, {} skipped whitelisted)",
             offline_state.known_blocked_ips.len(),
             offline_state.shared_risk_snapshot.categories.len(),
             restored,
             failed,
-            skipped
+            skipped_local,
+            skipped_whitelist
         );
     }
 
     // Initial fetch: load all existing block-list IPs before starting the watcher
     // so detections are classified "listed" from the very first event.
     // Also re-applies firewall rules so blocks survive agent/host restarts.
-    let init_client = ApiClient::new(config.server_url.clone(), config.jwt_token.clone());
     match init_client.fetch_decisions_since(0).await {
         Ok(decisions) => {
             let mut restored = 0u32;
             let mut failed = 0u32;
-            let mut skipped = 0u32;
+            let mut skipped_local = 0u32;
+            let mut skipped_whitelist = 0u32;
+            let whitelist_snapshot = whitelisted_ips.read().await.clone();
             {
                 let mut set = known_blocked_ips.write().await;
                 for d in &decisions {
+                    if whitelist_snapshot.contains(&d.ip) {
+                        continue;
+                    }
                     set.insert(d.ip.clone(), d.source.clone());
                 }
             }
             for d in &decisions {
+                if whitelist_snapshot.contains(&d.ip) {
+                    tracing::info!("startup: skipping whitelist-listed IP {}", d.ip);
+                    skipped_whitelist += 1;
+                    continue;
+                }
                 if should_skip_local_firewall_enforcement(&d.ip) {
                     tracing::warn!(
                         "startup: skipping firewall restore for local/reserved address {}",
                         d.ip
                     );
-                    skipped += 1;
+                    skipped_local += 1;
                     continue;
                 }
                 match block_ip(&d.ip, &backend).await {
@@ -227,13 +277,19 @@ async fn run() -> Result<()> {
                 }
             }
             tracing::info!(
-                "Loaded {} known blocked IP(s) from server; restored {} firewall rule(s) ({} failed, {} skipped local/reserved)",
+                "Loaded {} known blocked IP(s) from server; restored {} firewall rule(s) ({} failed, {} skipped local/reserved, {} skipped whitelisted)",
                 decisions.len(),
                 restored,
                 failed,
-                skipped
+                skipped_local,
+                skipped_whitelist
             );
-            sync::persist_offline_state(&known_blocked_ips, &shared_risk_snapshot).await;
+            sync::persist_offline_state(
+                &known_blocked_ips,
+                &whitelisted_ips,
+                &shared_risk_snapshot,
+            )
+            .await;
         }
         Err(e) => tracing::warn!("Failed to load initial block list: {}", e),
     }
@@ -241,7 +297,12 @@ async fn run() -> Result<()> {
     match init_client.fetch_shared_risk_profile().await {
         Ok(profile) => {
             *shared_risk_snapshot.write().await = profile;
-            sync::persist_offline_state(&known_blocked_ips, &shared_risk_snapshot).await;
+            sync::persist_offline_state(
+                &known_blocked_ips,
+                &whitelisted_ips,
+                &shared_risk_snapshot,
+            )
+            .await;
         }
         Err(e) => tracing::warn!("Failed to load initial shared-risk profile: {}", e),
     }
@@ -256,6 +317,7 @@ async fn run() -> Result<()> {
     let config_for_watcher = Arc::clone(&config_arc);
     let known_ips_for_watcher = Arc::clone(&known_blocked_ips);
     let enforced_ips_for_watcher = Arc::clone(&enforced_blocked_ips);
+    let whitelisted_ips_for_watcher = Arc::clone(&whitelisted_ips);
     let shared_risk_for_watcher = Arc::clone(&shared_risk_snapshot);
     let watcher_handle = tokio::spawn(async move {
         if let Err(e) = watch(
@@ -263,6 +325,7 @@ async fn run() -> Result<()> {
             tx,
             known_ips_for_watcher,
             enforced_ips_for_watcher,
+            whitelisted_ips_for_watcher,
             shared_risk_for_watcher,
             block_outcome_rx,
         )
@@ -277,6 +340,7 @@ async fn run() -> Result<()> {
         sync_client,
         Arc::clone(&known_blocked_ips),
         Arc::clone(&enforced_blocked_ips),
+        Arc::clone(&whitelisted_ips),
         Arc::clone(&shared_risk_snapshot),
         block_outcome_tx.clone(),
     ));
@@ -377,6 +441,23 @@ async fn run() -> Result<()> {
             }
             "block" => {
                 // Apply firewall IMMEDIATELY — before any network I/O.
+                if whitelisted_ips.read().await.contains(&event.ip) {
+                    tracing::info!("Skipping block event for whitelisted IP {}", event.ip);
+                    let _ = block_outcome_tx
+                        .send(BlockOutcome::Failed(event.ip.clone()))
+                        .await;
+                    if let Err(e) = unblock_ip(&event.ip, &backend).await {
+                        tracing::warn!(
+                            "Failed to ensure whitelisted IP {} is unblocked: {}",
+                            event.ip,
+                            e
+                        );
+                    } else {
+                        enforced_blocked_ips.write().await.remove(&event.ip);
+                    }
+                    continue;
+                }
+
                 if should_skip_local_firewall_enforcement(&event.ip) {
                     tracing::warn!(
                         "Skipping local/reserved block event for {} and leaving firewall unchanged",
@@ -408,7 +489,12 @@ async fn run() -> Result<()> {
                     .write()
                     .await
                     .insert(event.ip.clone(), "agent".to_string());
-                sync::persist_offline_state(&known_blocked_ips, &shared_risk_snapshot).await;
+                sync::persist_offline_state(
+                    &known_blocked_ips,
+                    &whitelisted_ips,
+                    &shared_risk_snapshot,
+                )
+                .await;
                 enqueue_outbox(
                     &outbox,
                     OutboxPayload::Decision {
@@ -432,6 +518,23 @@ async fn run() -> Result<()> {
             }
             "listed" => {
                 // IP already in block list DB: apply firewall IMMEDIATELY.
+                if whitelisted_ips.read().await.contains(&event.ip) {
+                    tracing::info!("Skipping listed event for whitelisted IP {}", event.ip);
+                    let _ = block_outcome_tx
+                        .send(BlockOutcome::Failed(event.ip.clone()))
+                        .await;
+                    if let Err(e) = unblock_ip(&event.ip, &backend).await {
+                        tracing::warn!(
+                            "Failed to ensure whitelisted listed IP {} is unblocked: {}",
+                            event.ip,
+                            e
+                        );
+                    } else {
+                        enforced_blocked_ips.write().await.remove(&event.ip);
+                    }
+                    continue;
+                }
+
                 if should_skip_local_firewall_enforcement(&event.ip) {
                     tracing::warn!(
                         "Skipping local/reserved listed IP {} and leaving firewall unchanged",

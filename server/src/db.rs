@@ -118,6 +118,14 @@ pub struct SharedRiskCategoryRow {
     pub label: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WhitelistEntryRow {
+    pub id: i64,
+    pub ip: String,
+    pub note: Option<String>,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SharedRiskProfileRow {
     pub generated_at: String,
@@ -259,6 +267,25 @@ impl Db {
         .execute(&self.0)
         .await?;
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS whitelist_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip TEXT NOT NULL UNIQUE,
+                note TEXT,
+                created_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_whitelist_entries_created_at ON whitelist_entries(created_at DESC)",
+        )
+        .execute(&self.0)
+        .await?;
+
         Ok(())
     }
 
@@ -268,7 +295,11 @@ impl Db {
         reason: &str,
         action: &str,
         source: &str,
-    ) -> anyhow::Result<i64> {
+    ) -> anyhow::Result<Option<i64>> {
+        if self.is_ip_whitelisted(ip).await? {
+            return Ok(None);
+        }
+
         let created_at = Utc::now().to_rfc3339();
         let geo = geoip::lookup(ip);
         let result = sqlx::query(
@@ -287,7 +318,7 @@ impl Db {
         .execute(&self.0)
         .await?;
 
-        Ok(result.last_insert_rowid())
+        Ok(Some(result.last_insert_rowid()))
     }
 
     pub async fn insert_telemetry_event(
@@ -564,6 +595,89 @@ impl Db {
                 },
             )
             .collect())
+    }
+
+    pub async fn list_whitelist_entries(
+        &self,
+        limit: i64,
+    ) -> anyhow::Result<Vec<WhitelistEntryRow>> {
+        let rows = sqlx::query_as::<_, (i64, String, Option<String>, String)>(
+            "SELECT id, ip, note, created_at FROM whitelist_entries ORDER BY created_at DESC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(id, ip, note, created_at)| WhitelistEntryRow {
+                id,
+                ip,
+                note,
+                created_at,
+            })
+            .collect())
+    }
+
+    pub async fn is_ip_whitelisted(&self, ip: &str) -> anyhow::Result<bool> {
+        let row =
+            sqlx::query_as::<_, (i64,)>("SELECT 1 FROM whitelist_entries WHERE ip = ? LIMIT 1")
+                .bind(ip)
+                .fetch_optional(&self.0)
+                .await?;
+
+        Ok(row.is_some())
+    }
+
+    pub async fn upsert_whitelist_entry(
+        &self,
+        ip: &str,
+        note: Option<&str>,
+    ) -> anyhow::Result<WhitelistEntryRow> {
+        let created_at = Utc::now().to_rfc3339();
+
+        sqlx::query(
+            r#"
+            INSERT INTO whitelist_entries (ip, note, created_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(ip) DO UPDATE SET
+                note = excluded.note
+            "#,
+        )
+        .bind(ip)
+        .bind(note)
+        .bind(&created_at)
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query("DELETE FROM decisions WHERE ip = ?")
+            .bind(ip)
+            .execute(&self.0)
+            .await?;
+
+        let (id, ip, note, created_at) =
+            sqlx::query_as::<_, (i64, String, Option<String>, String)>(
+                "SELECT id, ip, note, created_at FROM whitelist_entries WHERE ip = ?",
+            )
+            .bind(ip)
+            .fetch_one(&self.0)
+            .await?;
+
+        Ok(WhitelistEntryRow {
+            id,
+            ip,
+            note,
+            created_at,
+        })
+    }
+
+    pub async fn delete_whitelist_entry(&self, id: i64) -> anyhow::Result<bool> {
+        let result = sqlx::query("DELETE FROM whitelist_entries WHERE id = ?")
+            .bind(id)
+            .execute(&self.0)
+            .await?;
+
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn backfill_decision_geoip_unknowns(&self) -> anyhow::Result<u64> {
@@ -1102,13 +1216,15 @@ mod tests {
         let id1 = db
             .insert_decision("192.168.1.1", "Test reason 1", "block", "agent")
             .await
-            .expect("Failed to insert decision 1");
+            .expect("Failed to insert decision 1")
+            .expect("decision should be inserted");
         assert!(id1 > 0);
 
         let id2 = db
             .insert_decision("192.168.1.2", "Test reason 2", "block", "agent")
             .await
-            .expect("Failed to insert decision 2");
+            .expect("Failed to insert decision 2")
+            .expect("decision should be inserted");
         assert!(id2 > id1);
 
         // List decisions
@@ -1176,5 +1292,45 @@ mod tests {
 
         assert_eq!(category.label, "shared:surge");
         assert_eq!(category.force_threshold, None);
+    }
+
+    #[tokio::test]
+    async fn whitelist_skips_new_decisions() {
+        let db = Db::new(":memory:").await.expect("Failed to create test DB");
+
+        db.upsert_whitelist_entry("203.0.113.44", Some("trusted admin"))
+            .await
+            .unwrap();
+
+        let inserted = db
+            .insert_decision("203.0.113.44", "Test reason", "block", "agent")
+            .await
+            .unwrap();
+        assert_eq!(inserted, None);
+        assert!(db.list_decisions(10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn whitelist_insert_removes_existing_decisions_for_same_ip() {
+        let db = Db::new(":memory:").await.expect("Failed to create test DB");
+
+        db.insert_decision("198.51.100.70", "Block me", "block", "agent")
+            .await
+            .unwrap()
+            .expect("decision should be inserted");
+        db.insert_decision("198.51.100.71", "Keep me", "block", "agent")
+            .await
+            .unwrap()
+            .expect("decision should be inserted");
+
+        let entry = db
+            .upsert_whitelist_entry("198.51.100.70", Some("admin override"))
+            .await
+            .unwrap();
+        assert_eq!(entry.ip, "198.51.100.70");
+
+        let decisions = db.list_decisions(10).await.unwrap();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].ip, "198.51.100.71");
     }
 }

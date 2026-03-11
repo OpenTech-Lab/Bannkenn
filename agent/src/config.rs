@@ -191,6 +191,8 @@ pub struct OfflineAgentState {
     #[serde(default)]
     pub known_blocked_ips: HashMap<String, String>,
     #[serde(default)]
+    pub whitelisted_ips: Vec<String>,
+    #[serde(default)]
     pub shared_risk_snapshot: SharedRiskSnapshot,
 }
 
@@ -272,6 +274,7 @@ mod tests {
         let path = dir.join("offline.toml");
         let state = OfflineAgentState {
             known_blocked_ips: HashMap::from([("203.0.113.10".to_string(), "agent".to_string())]),
+            whitelisted_ips: vec!["198.51.100.7".to_string()],
             shared_risk_snapshot: SharedRiskSnapshot {
                 generated_at: "2026-03-10T00:00:00Z".to_string(),
                 window_secs: 600,

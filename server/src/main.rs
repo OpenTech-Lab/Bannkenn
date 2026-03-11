@@ -8,7 +8,7 @@ mod routes;
 use anyhow::{bail, Context};
 use axum::{
     middleware,
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
     Router,
 };
 use config::ServerConfig;
@@ -98,9 +98,13 @@ async fn run_server() -> anyhow::Result<()> {
                             .insert_decision(&ip, &reason, "block", "campaign")
                             .await
                         {
-                            Ok(id) => info!(
+                            Ok(Some(id)) => info!(
                                 "Campaign auto-block: IP={} category='{}' decision_id={}",
                                 ip, category, id
+                            ),
+                            Ok(None) => info!(
+                                "Campaign auto-block skipped for whitelisted IP={} category='{}'",
+                                ip, category
                             ),
                             Err(e) => {
                                 error!("Failed to insert campaign decision for {}: {}", ip, e)
@@ -157,6 +161,7 @@ async fn run_server() -> anyhow::Result<()> {
     let telemetry_state = Arc::new(routes::telemetry::AppState { db: db.clone() });
     let community_state = Arc::new(routes::community::AppState { db: db.clone() });
     let ssh_logins_state = Arc::new(routes::ssh_logins::AppState { db: db.clone() });
+    let whitelist_state = Arc::new(routes::whitelist::AppState { db: db.clone() });
 
     // Public: GET /api/v1/decisions
     let decisions_read = Router::new()
@@ -205,6 +210,16 @@ async fn run_server() -> anyhow::Result<()> {
         .nest(
             "/api/v1/ssh-logins",
             ssh_logins_read.merge(ssh_logins_write),
+        )
+        .nest(
+            "/api/v1/whitelist",
+            Router::new()
+                .route(
+                    "/",
+                    get(routes::whitelist::list).post(routes::whitelist::create),
+                )
+                .route("/:id", delete(routes::whitelist::delete))
+                .with_state(whitelist_state),
         )
         .route(
             "/api/v1/community/ips",

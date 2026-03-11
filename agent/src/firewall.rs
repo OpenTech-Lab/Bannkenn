@@ -322,6 +322,15 @@ pub async fn block_ip(ip: &str, backend: &FirewallBackend) -> Result<()> {
     }
 }
 
+/// Remove an IP address from the active firewall backend.
+pub async fn unblock_ip(ip: &str, backend: &FirewallBackend) -> Result<()> {
+    match backend {
+        FirewallBackend::Nftables => unblock_ip_nftables(ip).await,
+        FirewallBackend::Iptables => unblock_ip_iptables(ip).await,
+        FirewallBackend::None => Ok(()),
+    }
+}
+
 fn should_skip_ipv4_firewall_enforcement(ip: Ipv4Addr) -> bool {
     let [first, second, _, _] = ip.octets();
 
@@ -377,6 +386,31 @@ async fn block_ip_nftables(ip: &str) -> Result<()> {
     Ok(())
 }
 
+async fn unblock_ip_nftables(ip: &str) -> Result<()> {
+    let output = Command::new("nft")
+        .args([
+            "delete",
+            "element",
+            NFT_FAMILY,
+            NFT_TABLE,
+            NFT_BLOCKLIST_SET,
+            &format!("{{ {} }}", ip),
+        ])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if is_nft_missing_error(&stderr) || stderr.contains("No such file or directory") {
+            return Ok(());
+        }
+        return Err(anyhow!("nftables unblock failed for {}: {}", ip, stderr));
+    }
+
+    tracing::info!("Unblocked IP {} using nftables", ip);
+    Ok(())
+}
+
 /// Block IP using iptables
 async fn block_ip_iptables(ip: &str) -> Result<()> {
     ensure_iptables_drop("INPUT", ip).await?;
@@ -404,6 +438,41 @@ async fn ensure_iptables_drop(chain: &str, ip: &str) -> Result<()> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow!(
             "iptables block failed for {} in {}: {}",
+            ip,
+            chain,
+            stderr
+        ));
+    }
+
+    Ok(())
+}
+
+async fn unblock_ip_iptables(ip: &str) -> Result<()> {
+    remove_iptables_drop("INPUT", ip).await?;
+    remove_iptables_drop("FORWARD", ip).await?;
+
+    tracing::info!("Unblocked IP {} using iptables", ip);
+    Ok(())
+}
+
+async fn remove_iptables_drop(chain: &str, ip: &str) -> Result<()> {
+    let check = Command::new("iptables")
+        .args(["-C", chain, "-s", ip, "-j", "DROP"])
+        .output()
+        .await?;
+    if !check.status.success() {
+        return Ok(());
+    }
+
+    let output = Command::new("iptables")
+        .args(["-D", chain, "-s", ip, "-j", "DROP"])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "iptables unblock failed for {} in {}: {}",
             ip,
             chain,
             stderr

@@ -16,6 +16,14 @@ pub struct DecisionRow {
     pub expires_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhitelistEntry {
+    pub id: i64,
+    pub ip: String,
+    pub note: Option<String>,
+    pub created_at: String,
+}
+
 /// API client for communicating with the BannKenn server
 #[derive(Clone)]
 pub struct ApiClient {
@@ -51,6 +59,26 @@ impl ApiClient {
         }
 
         let rows: Vec<DecisionRow> = response.json().await?;
+        Ok(rows)
+    }
+
+    /// Fetch centrally managed IP whitelist entries.
+    pub async fn fetch_whitelist(&self) -> Result<Vec<WhitelistEntry>> {
+        let url = format!("{}/api/v1/whitelist", self.base_url);
+
+        let response = self.http.get(&url).send().await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Server returned whitelist error {}: {}",
+                status,
+                text
+            ));
+        }
+
+        let rows: Vec<WhitelistEntry> = response.json().await?;
         Ok(rows)
     }
 
