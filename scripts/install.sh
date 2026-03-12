@@ -132,9 +132,45 @@ require_docker_compose() {
     docker compose version >/dev/null 2>&1 || error "docker compose is required"
 }
 
+prepare_server_vendor_tree() {
+    local build_flag="$1"
+    [[ -n "$build_flag" ]] || return 0
+
+    local build_user="${SUDO_USER:-$USER}"
+    local temp_vendor_dir="$REPO_ROOT/.vendor-tmp"
+    local vendor_dir="$REPO_ROOT/vendor"
+
+    info "Preparing Rust vendor tree for offline Docker build..."
+
+    rm -rf "$temp_vendor_dir"
+
+    if sudo -iu "$build_user" bash -lc 'export PATH="$HOME/.cargo/bin:$PATH"; command -v cargo >/dev/null 2>&1'; then
+        sudo -iu "$build_user" bash -lc 'export PATH="$HOME/.cargo/bin:$PATH"; cd "'"$REPO_ROOT"'"; cargo vendor --versioned-dirs .vendor-tmp >/tmp/bannkenn-vendor-config.toml'
+    else
+        local repo_uid repo_gid
+        repo_uid=$(stat -c '%u' "$REPO_ROOT")
+        repo_gid=$(stat -c '%g' "$REPO_ROOT")
+
+        info "cargo not found for '$build_user'; using a Rust container to generate vendored crates"
+        docker run --rm \
+            --user "$repo_uid:$repo_gid" \
+            -v "$REPO_ROOT:/app" \
+            -w /app \
+            rust:slim-bookworm \
+            bash -lc 'set -euo pipefail; cargo vendor --versioned-dirs .vendor-tmp >/tmp/bannkenn-vendor-config.toml'
+    fi
+
+    [[ -d "$temp_vendor_dir" ]] || error "Failed to prepare vendored crates"
+
+    rm -rf "$vendor_dir"
+    mv "$temp_vendor_dir" "$vendor_dir"
+}
+
 compose_stack_up() {
     local compose_dir="$1"
     local build_flag="$2"
+
+    prepare_server_vendor_tree "$build_flag"
 
     if [[ -n "$build_flag" ]]; then
         (cd "$compose_dir" && docker compose up -d --build --force-recreate server dashboard)

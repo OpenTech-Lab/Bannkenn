@@ -62,23 +62,44 @@ pub async fn create(
 #[derive(Debug, Deserialize)]
 pub struct ListParams {
     pub since_id: Option<i64>,
+    pub limit: Option<i64>,
+    pub scope: Option<String>,
 }
 
 pub async fn list(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListParams>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let decisions = match params.since_id {
-        Some(id) => state
+    let scope = params.scope.as_deref().unwrap_or("all");
+    let limit = params.limit.unwrap_or(match scope {
+        "local" => 250,
+        _ => 100,
+    });
+    let limit = limit.clamp(1, 2000);
+
+    let decisions = match (params.since_id, scope) {
+        (Some(id), "all") => state
             .db
-            .list_decisions_since(id, 500)
+            .list_decisions_since(id, limit)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-        None => state
+        (Some(id), "local") => state
             .db
-            .list_decisions(100)
+            .list_local_decisions_since(id, limit)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        (Some(_), _) => return Err(StatusCode::BAD_REQUEST),
+        (None, "all") => state
+            .db
+            .list_decisions(limit)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        (None, "local") => state
+            .db
+            .list_local_decisions(limit)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        (None, _) => return Err(StatusCode::BAD_REQUEST),
     };
 
     Ok(Json(decisions))

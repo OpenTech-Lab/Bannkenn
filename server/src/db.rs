@@ -59,6 +59,16 @@ fn source_label(source: &str, agent_display_name: Option<String>) -> String {
         })
 }
 
+fn source_kind(source: &str, agent_id: Option<i64>) -> &'static str {
+    if agent_id.is_some() {
+        "agent"
+    } else if source == "campaign" {
+        "campaign"
+    } else {
+        "community"
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Db(SqlitePool);
 
@@ -122,6 +132,8 @@ pub struct SshLoginRow {
 pub struct CommunityIpRow {
     pub ip: String,
     pub source: String,
+    pub source_label: String,
+    pub kind: String,
     pub sightings: i64,
     pub last_seen_at: String,
 }
@@ -129,6 +141,8 @@ pub struct CommunityIpRow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommunityFeedRow {
     pub source: String,
+    pub source_label: String,
+    pub kind: String,
     pub ip_count: i64,
     pub first_seen_at: String,
     pub last_seen_at: String,
@@ -616,9 +630,84 @@ impl Db {
             .collect())
     }
 
+    pub async fn list_local_decisions_since(
+        &self,
+        since_id: i64,
+        limit: i64,
+    ) -> anyhow::Result<Vec<DecisionRow>> {
+        let rows = sqlx::query_as::<_, (i64, String, String, String, String, Option<String>, Option<String>, String, Option<String>)>(
+            r#"
+            SELECT d.id, d.ip, d.reason, d.action, d.source, d.country, d.asn_org, d.created_at, d.expires_at
+            FROM decisions d
+            LEFT JOIN agents a ON a.name = d.source
+            WHERE d.id > ? AND (a.id IS NOT NULL OR d.source = 'campaign')
+            ORDER BY d.id ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(since_id)
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, ip, reason, action, source, country, asn_org, created_at, expires_at)| {
+                    DecisionRow {
+                        id,
+                        ip,
+                        reason,
+                        action,
+                        source,
+                        country,
+                        asn_org,
+                        created_at,
+                        expires_at,
+                    }
+                },
+            )
+            .collect())
+    }
+
     pub async fn list_decisions(&self, limit: i64) -> anyhow::Result<Vec<DecisionRow>> {
         let rows = sqlx::query_as::<_, (i64, String, String, String, String, Option<String>, Option<String>, String, Option<String>)>(
             "SELECT id, ip, reason, action, source, country, asn_org, created_at, expires_at FROM decisions ORDER BY created_at DESC, id DESC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, ip, reason, action, source, country, asn_org, created_at, expires_at)| {
+                    DecisionRow {
+                        id,
+                        ip,
+                        reason,
+                        action,
+                        source,
+                        country,
+                        asn_org,
+                        created_at,
+                        expires_at,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    pub async fn list_local_decisions(&self, limit: i64) -> anyhow::Result<Vec<DecisionRow>> {
+        let rows = sqlx::query_as::<_, (i64, String, String, String, String, Option<String>, Option<String>, String, Option<String>)>(
+            r#"
+            SELECT d.id, d.ip, d.reason, d.action, d.source, d.country, d.asn_org, d.created_at, d.expires_at
+            FROM decisions d
+            LEFT JOIN agents a ON a.name = d.source
+            WHERE a.id IS NOT NULL OR d.source = 'campaign'
+            ORDER BY d.created_at DESC, d.id DESC
+            LIMIT ?
+            "#,
         )
         .bind(limit)
         .fetch_all(&self.0)
@@ -1083,17 +1172,17 @@ impl Db {
     }
 
     pub async fn list_community_ips(&self, limit: i64) -> anyhow::Result<Vec<CommunityIpRow>> {
-        let rows = sqlx::query_as::<_, (String, String, i64, String)>(
+        let rows = sqlx::query_as::<_, (String, String, Option<i64>, Option<String>, i64, String)>(
             r#"
             SELECT
                 d.ip,
                 d.source,
+                a.id,
+                a.nickname,
                 COUNT(*) as sightings,
                 MAX(d.created_at) as last_seen_at
             FROM decisions d
             LEFT JOIN agents a ON a.name = d.source
-            WHERE a.id IS NULL
-              AND d.source != 'campaign'
             GROUP BY d.ip, d.source
             ORDER BY last_seen_at DESC
             LIMIT ?
@@ -1105,29 +1194,39 @@ impl Db {
 
         Ok(rows
             .into_iter()
-            .map(|(ip, source, sightings, last_seen_at)| CommunityIpRow {
-                ip,
-                source,
-                sightings,
-                last_seen_at,
-            })
+            .map(
+                |(ip, source, agent_id, nickname, sightings, last_seen_at)| CommunityIpRow {
+                    ip,
+                    source_label: source_label(&source, nickname),
+                    kind: source_kind(&source, agent_id).to_string(),
+                    source,
+                    sightings,
+                    last_seen_at,
+                },
+            )
             .collect())
     }
 
     pub async fn list_community_feeds(&self) -> anyhow::Result<Vec<CommunityFeedRow>> {
-        let rows = sqlx::query_as::<_, (String, i64, String, String)>(
+        let rows = sqlx::query_as::<_, (String, Option<i64>, Option<String>, i64, String, String)>(
             r#"
             SELECT
                 d.source,
+                a.id,
+                a.nickname,
                 COUNT(DISTINCT d.ip) as ip_count,
                 MIN(d.created_at) as first_seen_at,
                 MAX(d.created_at) as last_seen_at
             FROM decisions d
             LEFT JOIN agents a ON a.name = d.source
-            WHERE a.id IS NULL
-              AND d.source != 'campaign'
-            GROUP BY d.source
-            ORDER BY last_seen_at DESC
+            GROUP BY d.source, a.id, a.nickname
+            ORDER BY
+                CASE
+                    WHEN d.source = 'campaign' THEN 0
+                    WHEN a.id IS NOT NULL THEN 1
+                    ELSE 2
+                END,
+                last_seen_at DESC
             "#,
         )
         .fetch_all(&self.0)
@@ -1136,11 +1235,15 @@ impl Db {
         Ok(rows
             .into_iter()
             .map(
-                |(source, ip_count, first_seen_at, last_seen_at)| CommunityFeedRow {
-                    source,
-                    ip_count,
-                    first_seen_at,
-                    last_seen_at,
+                |(source, agent_id, nickname, ip_count, first_seen_at, last_seen_at)| {
+                    CommunityFeedRow {
+                        source_label: source_label(&source, nickname),
+                        kind: source_kind(&source, agent_id).to_string(),
+                        source,
+                        ip_count,
+                        first_seen_at,
+                        last_seen_at,
+                    }
                 },
             )
             .collect())
@@ -1160,10 +1263,7 @@ impl Db {
                 MIN(d.created_at) as first_seen_at,
                 MAX(d.created_at) as last_seen_at
             FROM decisions d
-            LEFT JOIN agents a ON a.name = d.source
             WHERE d.source = ?
-              AND a.id IS NULL
-              AND d.source != 'campaign'
             GROUP BY d.ip
             ORDER BY last_seen_at DESC
             LIMIT ?
@@ -1726,6 +1826,111 @@ mod tests {
         assert_eq!(decisions[1].reason, "Test reason 2");
         assert_eq!(decisions[0].created_at, "2026-03-11T09:05:00+00:00");
         assert_eq!(decisions[1].created_at, "2026-03-11T09:00:00+00:00");
+    }
+
+    #[tokio::test]
+    async fn list_local_decisions_excludes_community_feeds() {
+        let db = Db::new(":memory:").await.expect("Failed to create test DB");
+
+        db.insert_agent("agent-alpha", "token-a", None)
+            .await
+            .unwrap();
+
+        db.insert_decision_with_timestamp(
+            "203.0.113.44",
+            "Manual block",
+            "block",
+            "agent-alpha",
+            Some("2026-03-11T09:05:00+00:00"),
+        )
+        .await
+        .unwrap()
+        .expect("agent decision should be inserted");
+        db.insert_decision_with_timestamp(
+            "203.0.113.45",
+            "Campaign auto-block: SSH brute force",
+            "block",
+            "campaign",
+            Some("2026-03-11T09:04:00+00:00"),
+        )
+        .await
+        .unwrap()
+        .expect("campaign decision should be inserted");
+        db.insert_decision_with_timestamp(
+            "203.0.113.46",
+            "ipsum_feed",
+            "block",
+            "ipsum_feed",
+            Some("2026-03-11T09:06:00+00:00"),
+        )
+        .await
+        .unwrap()
+        .expect("community decision should be inserted");
+
+        let decisions = db.list_local_decisions(10).await.unwrap();
+        assert_eq!(decisions.len(), 2);
+        assert_eq!(decisions[0].source, "agent-alpha");
+        assert_eq!(decisions[1].source, "campaign");
+
+        let incremental = db.list_local_decisions_since(0, 10).await.unwrap();
+        assert_eq!(incremental.len(), 2);
+        assert!(incremental.iter().all(|row| row.source != "ipsum_feed"));
+    }
+
+    #[tokio::test]
+    async fn list_community_feeds_includes_agent_and_campaign_sources() {
+        let db = Db::new(":memory:").await.expect("Failed to create test DB");
+
+        let agent_id = db
+            .insert_agent("agent-alpha", "token-a", None)
+            .await
+            .unwrap();
+        db.update_agent_nickname(agent_id, "Tokyo edge")
+            .await
+            .unwrap();
+
+        db.insert_decision_with_timestamp(
+            "203.0.113.10",
+            "feed",
+            "block",
+            "ipsum_feed",
+            Some("2026-03-11T09:00:00+00:00"),
+        )
+        .await
+        .unwrap()
+        .expect("feed decision should be inserted");
+        db.insert_decision_with_timestamp(
+            "203.0.113.11",
+            "agent",
+            "block",
+            "agent-alpha",
+            Some("2026-03-11T09:01:00+00:00"),
+        )
+        .await
+        .unwrap()
+        .expect("agent decision should be inserted");
+        db.insert_decision_with_timestamp(
+            "203.0.113.12",
+            "campaign",
+            "block",
+            "campaign",
+            Some("2026-03-11T09:02:00+00:00"),
+        )
+        .await
+        .unwrap()
+        .expect("campaign decision should be inserted");
+
+        let sources = db.list_community_feeds().await.unwrap();
+
+        assert_eq!(sources.len(), 3);
+        assert_eq!(sources[0].source, "campaign");
+        assert_eq!(sources[0].kind, "campaign");
+        assert_eq!(sources[0].source_label, "Campaign auto-block");
+        assert_eq!(sources[1].source, "agent-alpha");
+        assert_eq!(sources[1].kind, "agent");
+        assert_eq!(sources[1].source_label, "Tokyo edge");
+        assert_eq!(sources[2].source, "ipsum_feed");
+        assert_eq!(sources[2].kind, "community");
     }
 
     #[tokio::test]

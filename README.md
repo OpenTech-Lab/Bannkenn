@@ -44,6 +44,7 @@ $EDITOR .env
 This repo expects the root `.env` file to be set up first.
 
 At minimum, set `BANNKENN_PUBLIC_ADDRESS`. For self-signed TLS flows, also set `BANNKENN_TLS_SANS` to every IP/hostname agents or browsers will use.
+If you plan to use `scripts/update-server.sh`, set `BANNKENN_DEPLOY_MODE` to `http` or `native-tls` so updates preserve the same deployment mode every time.
 
 ### 3. Start server + dashboard after `.env` is configured
 
@@ -51,6 +52,12 @@ Recommended one-command HTTP setup:
 
 ```bash
 sudo bash scripts/install.sh dashboard
+```
+
+Later HTTP updates can use:
+
+```bash
+sudo bash scripts/update-server.sh
 ```
 
 Manual equivalent:
@@ -107,6 +114,8 @@ If you generated the certs in `/etc/bannkenn/tls`:
 ```bash
 sudo bash scripts/install.sh dashboard-native-tls
 ```
+
+If you use native TLS for agents, set `BANNKENN_DEPLOY_MODE=native-tls` in `.env` and then use `sudo bash scripts/update-server.sh` for future updates. That wrapper reuses the existing certificate files and refuses to replace them during an update.
 
 If the certs do not exist yet and agents will connect to `123.123.123.123`:
 

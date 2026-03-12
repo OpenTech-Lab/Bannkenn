@@ -23,6 +23,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link href="/community" className="hover:text-white transition-colors">
               Community IPs
             </Link>
+            <Link href="/whitelist" className="hover:text-white transition-colors">
+              Whitelist
+            </Link>
           </nav>
         </div>
         {children}

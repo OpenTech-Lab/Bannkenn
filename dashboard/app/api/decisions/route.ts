@@ -1,10 +1,12 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 const SERVER_URL = process.env.BANNKENN_SERVER_URL ?? 'http://localhost:3022';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const res = await fetch(`${SERVER_URL}/api/v1/decisions`, {
+    const query = request.nextUrl.searchParams.toString();
+    const url = query ? `${SERVER_URL}/api/v1/decisions?${query}` : `${SERVER_URL}/api/v1/decisions`;
+    const res = await fetch(url, {
       next: { revalidate: 0 },
     });
     if (!res.ok) {

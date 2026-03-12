@@ -1,5 +1,73 @@
 # BannKenn MVP Task List
 
+## Current Task – consistent TLS-safe updates
+- [x] Inspect how `update-server.sh` currently handles HTTP vs native TLS deployments
+- [x] Update `update-server.sh` to preserve deployment mode and refuse accidental TLS certificate replacement during updates
+- [x] Verify the wrapper behavior for HTTP, native TLS, and missing-certificate guardrails; document the review note
+
+## Current Task Review – consistent TLS-safe updates
+- Root cause: `scripts/update-server.sh` always delegated to the plain HTTP `dashboard` mode, which would not preserve native-TLS deployments for agent traffic.
+- Updated `scripts/update-server.sh` to preserve deployment mode via explicit `--mode` or `BANNKENN_DEPLOY_MODE`, with auto-detection from the running `bannkenn-server` container when possible.
+- In native-TLS mode, the updater now requires the existing `bannkenn.crt` and `bannkenn.key` files to already exist and refuses to regenerate or replace them during an update, preventing accidental trust breaks for agents pinned to the existing certificate.
+- If auto-detection is ambiguous while TLS files are present, the updater now aborts and tells the operator to set `BANNKENN_DEPLOY_MODE=native-tls` in `.env` or pass `--mode native-tls`, instead of silently switching modes.
+- Added `BANNKENN_DEPLOY_MODE` to `.env.example` and documented the update behavior in `README.md`.
+- Verification: `bash -n scripts/update-server.sh` passed; `bash scripts/update-server.sh --help` shows the new mode-preserving behavior; dry-run checks passed for explicit HTTP and native-TLS modes; explicit native-TLS with missing certs failed with the expected guard; auto mode with stray TLS files also failed with the expected ambiguity error.
+
+## Current Task – dedicated whitelist page
+- [x] Inspect the current whitelist UI on the dashboard home page and the shared navigation
+- [x] Move whitelist management into a dedicated dashboard page and remove it from home
+- [x] Verify the dashboard build path and document the review note
+
+## Current Task Review – dedicated whitelist page
+- Moved the add/edit/remove whitelist management UI out of `dashboard/app/page.tsx` into a dedicated route at `dashboard/app/whitelist/page.tsx`.
+- Removed whitelist state/fetching from the home page so `/` only loads the overview data it actually renders.
+- Added a `Whitelist` navigation link in `dashboard/app/layout.tsx` so the new page is reachable from the primary nav.
+- Verification: `docker build -f docker/Dockerfile.dashboard -t bannkenn-dashboard-test .` passed, and the build output includes the new static route `/whitelist`.
+
+## Current Task – dashboard build fix
+- [x] Inspect the failing dashboard build reference in `dashboard/app/page.tsx`
+- [x] Replace the stale `localDecisions` usage with the current local decisions state
+- [x] Verify the dashboard build path and document the review note
+
+## Current Task Review – dashboard build fix
+- Root cause: the recent home-page data-path change removed the `localDecisions` variable but one stat card in `dashboard/app/page.tsx` still referenced it, so the Next.js type check failed during `npm run build`.
+- Fixed by switching the `Total decisions` stat to `decisions.length`, which matches the current `scope=local` API response already used by the page.
+- Verification: `docker build -f docker/Dockerfile.dashboard -t bannkenn-dashboard-test .` passed after the patch.
+
+## Current Task – docker vendor preflight
+- [x] Inspect the server Docker build path and confirm why `vendor/` was required
+- [x] Update the Compose deploy helper to prepare vendored Rust crates automatically before build
+- [x] Verify the vendored build path and document the review note
+
+## Current Task Review – docker vendor preflight
+- Root cause: `docker/Dockerfile.server` builds with `cargo --frozen` and `docker/cargo-vendor-config.toml`, so the server image requires a local `vendor/` tree; the repo had `vendor/` ignored and missing, causing `COPY vendor/ vendor/` to fail before the build even started.
+- Updated `scripts/install.sh` so Compose-based server/dashboard builds now regenerate a fresh vendored crate tree automatically before `docker compose up -d --build`. It prefers the invoking user's local Cargo cache and falls back to a temporary Rust container if host `cargo` is unavailable.
+- This keeps the existing offline/frozen Docker build design instead of switching the server image back to live dependency downloads from crates.io.
+- Verification: `bash -n scripts/install.sh` passed; `bash scripts/install.sh --help` still shows the expected modes; `cargo build --frozen --config docker/cargo-vendor-config.toml --bin bannkenn-server` passed; `docker build -f docker/Dockerfile.server -t bannkenn-server-test .` passed after the vendor refresh.
+
+## Current Task – safe server update helper
+- [x] Review the existing deploy helper flow for the plain HTTP server/dashboard stack
+- [x] Add a dedicated update script that only forwards to the non-TLS dashboard deploy path
+- [x] Verify the helper syntax/usage and document the review note
+
+## Current Task Review – safe server update helper
+- Added `scripts/update-server.sh` as a narrow wrapper around `scripts/install.sh dashboard`, so the operator has a single-purpose command for HTTP stack updates.
+- The wrapper only accepts `--dashboard-url` and `--no-build`, prints its own short help, and rejects TLS-specific flags or alternate install modes before delegating.
+- Verification: `bash -n scripts/update-server.sh` passed; `bash scripts/update-server.sh --help` showed the intended HTTP-only usage; `bash scripts/update-server.sh --tls-dir /tmp` failed with the expected guardrail message.
+
+## Current Task – dashboard source lists regression
+- [x] Inspect dashboard and server data paths for missing Community IP Lists and Recent Activity rows
+- [x] Fix source classification so community page includes agent, campaign, and feed-backed lists
+- [x] Fix Recent Activity to request local decisions server-side instead of filtering a feed-dominated slice client-side
+- [x] Verify with targeted tests/checks and document the review note
+
+## Current Task Review – dashboard source lists regression
+- Root cause 1: `server/src/db.rs` community source queries filtered to `a.id IS NULL` and `d.source != 'campaign'`, so the community page silently excluded agent-origin and campaign-origin decision lists.
+- Root cause 2: the dashboard home page fetched only the latest 100 global decisions, then filtered out community feeds in the browser; when feed ingestion filled that slice, `Recent Activity` became empty even though agent/campaign blocks still existed.
+- Fixed by adding server-side local decision queries and a `scope=local` option on `GET /api/v1/decisions`, then updating the dashboard home page to request local decisions directly.
+- Fixed by widening the community source queries to classify and return `community`, `agent`, and `campaign` sources, and updating the community page copy/metadata to render those source types clearly.
+- Verification: `cargo test -p bannkenn-server list_` passed (10 tests, including new regression coverage for local decision filtering and source-list inclusion); `cargo check -p bannkenn-server` passed; `npm run build` in `dashboard/` could not run in this workspace because the local `next` binary is not installed.
+
 ## Current Task – README env prerequisite
 - [x] Review the existing README setup flow for `.env` guidance gaps
 - [x] Update the primary install instructions so `.env` setup is called out as required before running install or compose commands

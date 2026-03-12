@@ -21,6 +21,8 @@ import { ChevronRight, Globe, RefreshCw } from 'lucide-react';
 
 interface CommunityFeed {
   source: string;
+  source_label: string;
+  kind: 'community' | 'agent' | 'campaign';
   ip_count: number;
   first_seen_at: string;
   last_seen_at: string;
@@ -58,13 +60,32 @@ const FEED_META: Record<string, FeedMeta> = {
   },
 };
 
-function getFeedMeta(source: string): FeedMeta {
-  if (FEED_META[source]) return FEED_META[source];
-  const title = source
-    .replace(/_feed$/, '')
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-  return { title, description: `Community feed: ${source}`, tags: ['community'] };
+function getFeedMeta(feed: CommunityFeed): FeedMeta {
+  if (feed.kind === 'campaign') {
+    return {
+      title: feed.source_label,
+      description: 'Server-generated cross-agent campaign blocks created from correlated telemetry.',
+      tags: ['campaign', 'auto-block'],
+    };
+  }
+
+  if (feed.kind === 'agent') {
+    return {
+      title: feed.source_label,
+      description: 'Block decisions reported by this agent.',
+      tags: ['agent', 'local-detection'],
+    };
+  }
+
+  if (FEED_META[feed.source]) return FEED_META[feed.source];
+
+  const title =
+    feed.source_label ||
+    feed.source
+      .replace(/_feed$/, '')
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  return { title, description: `Community feed: ${feed.source}`, tags: ['community'] };
 }
 
 const POLL_INTERVAL = 30_000;
@@ -84,7 +105,7 @@ export default function CommunityPage() {
     try {
       const res = await fetch('/api/community/feeds');
       if (!res.ok) {
-        setError('Failed to fetch community feeds');
+        setError('Failed to fetch IP source lists');
         return;
       }
       const data: CommunityFeed[] = await res.json();
@@ -122,7 +143,9 @@ export default function CommunityPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white">Community IP Lists</h1>
-          <p className="text-gray-400 text-sm mt-0.5">Threat intelligence feeds ingested automatically</p>
+          <p className="text-gray-400 text-sm mt-0.5">
+            Community feeds, agent-reported blocks, and campaign auto-blocks
+          </p>
         </div>
         <div className="flex items-center gap-3">
           {lastUpdated && (
@@ -151,12 +174,12 @@ export default function CommunityPage() {
       {feeds.length === 0 && !error ? (
         <div className="text-center py-20 text-gray-600">
           <Globe className="h-10 w-10 mx-auto mb-3 opacity-30" />
-          <p>No community feeds ingested yet</p>
+          <p>No IP source lists available yet</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {feeds.map((feed) => {
-            const meta = getFeedMeta(feed.source);
+            const meta = getFeedMeta(feed);
             return (
               <button
                 key={feed.source}
@@ -217,7 +240,7 @@ export default function CommunityPage() {
           <DialogHeader>
             <DialogTitle className="text-white flex items-center gap-2">
               <Globe className="h-4 w-4 text-gray-400" />
-              {selectedFeed ? getFeedMeta(selectedFeed.source).title : ''}
+              {selectedFeed ? getFeedMeta(selectedFeed).title : ''}
               {selectedFeed && (
                 <Badge variant="secondary" className="ml-1 bg-gray-800 text-gray-400 border-gray-700 text-xs">
                   {selectedFeed.ip_count.toLocaleString()} IPs
