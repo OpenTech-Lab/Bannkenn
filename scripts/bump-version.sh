@@ -53,7 +53,7 @@ if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
 fi
 
 CHANGELOG_DIR="$REPO_ROOT/scripts/version"
-CHANGELOG_FILE="$CHANGELOG_DIR/changelog.md"
+CHANGELOG_FILE="$CHANGELOG_DIR/${TAG}.md"
 
 mkdir -p "$CHANGELOG_DIR"
 
@@ -113,16 +113,6 @@ fi
 
 step "Creating changelog: ${TAG}.md"
 
-# Rename existing changelog if present
-PREV_TAG_FOR_RENAME=""
-if [[ -f "$CHANGELOG_FILE" ]]; then
-    PREV_TAG_FOR_RENAME="$(git tag --sort=-version:refname | head -1 2>/dev/null || true)"
-    if [[ -n "$PREV_TAG_FOR_RENAME" ]]; then
-        mv "$CHANGELOG_FILE" "$CHANGELOG_DIR/${PREV_TAG_FOR_RENAME}.md"
-        info "Renamed previous changelog to ${PREV_TAG_FOR_RENAME}.md"
-    fi
-fi
-
 DATE="$(date +%Y-%m-%d)"
 
 # Gather commits since last tag (or all if no previous tag)
@@ -176,14 +166,21 @@ Invoke-WebRequest -Uri https://github.com/OpenTech-Lab/bannkenn/releases/downloa
 https://github.com/OpenTech-Lab/bannkenn/compare/${PREV_TAG:-HEAD}...${TAG}
 EOF
 
-mv "$CHANGELOG_FILE" "$CHANGELOG_DIR/${TAG}.md"
-CHANGELOG_FILE="$CHANGELOG_DIR/${TAG}.md"
 info "Created ${TAG}.md"
 
+OLD_CHANGELOG_FILES=()
+while IFS= read -r -d '' changelog; do
+    OLD_CHANGELOG_FILES+=("$changelog")
+done < <(find "$CHANGELOG_DIR" -maxdepth 1 -type f -name 'v*.md' ! -name "${TAG}.md" -print0)
+
+if (( ${#OLD_CHANGELOG_FILES[@]} > 0 )); then
+    rm -f -- "${OLD_CHANGELOG_FILES[@]}"
+    info "Removed ${#OLD_CHANGELOG_FILES[@]} old changelog file(s)"
+fi
+
 git add "$CHANGELOG_FILE"
-# Stage renamed previous changelog if present
-if [[ -n "$PREV_TAG_FOR_RENAME" ]]; then
-    git add "$CHANGELOG_DIR/${PREV_TAG_FOR_RENAME}.md" 2>/dev/null || true
+if (( ${#OLD_CHANGELOG_FILES[@]} > 0 )); then
+    git add -u "$CHANGELOG_DIR"
 fi
 git commit -m "chore: release ${TAG}"
 info "Committed version bump and changelog"

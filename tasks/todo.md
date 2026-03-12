@@ -1,5 +1,16 @@
 # BannKenn MVP Task List
 
+## Current Task – bump-version cleanup
+- [x] Inspect current `scripts/bump-version.sh` changelog retention behavior
+- [x] Update release changelog cleanup to keep only the latest markdown file in `scripts/version/`
+- [x] Verify the script flow still matches `.github/workflows/release.yml`
+- [x] Document results in a review note
+
+## Current Task Review – bump-version cleanup
+- `scripts/bump-version.sh` now writes the release notes directly to `scripts/version/${TAG}.md` instead of using a temporary `changelog.md` rename flow.
+- After generating the new release note, the script removes other `v*.md` files in `scripts/version/` so only the latest tagged markdown file remains.
+- Verification: `bash -n scripts/bump-version.sh` passed; a temp-directory simulation left only the newest `v*.md`; `.github/workflows/release.yml` still reads `scripts/version/${{ github.ref_name }}.md`, which matches the updated script output.
+
 ## Phase 1 – Scaffolding (Claude)
 - [x] Create tasks/todo.md
 - [x] Create tasks/lessons.md
