@@ -1,5 +1,14 @@
 # BannKenn MVP Task List
 
+## Current Task – README env prerequisite
+- [x] Review the existing README setup flow for `.env` guidance gaps
+- [x] Update the primary install instructions so `.env` setup is called out as required before running install or compose commands
+- [x] Verify the README wording and document the result in a review note
+
+## Current Task Review – README env prerequisite
+- Tightened the root `README.md` install flow so the `.env` step is explicitly marked as required before `scripts/install.sh`, `scripts/generate-ip-cert.sh`, or manual `docker compose` usage.
+- Added a short note that the repo-root `.env` file is read by the helper scripts and Compose-based setup, so operators should create and edit it immediately after cloning.
+
 ## Current Task – env-driven install setup
 - [x] Inspect install/cert scripts for hard-coded operator input
 - [x] Add `.env` and `.env.example` support for install/cert setup values

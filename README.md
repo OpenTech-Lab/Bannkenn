@@ -32,18 +32,20 @@ git clone https://github.com/OpenTech-Lab/bannkenn.git
 cd bannkenn
 ```
 
-### 2. Configure local setup values
+### 2. Required first-time setup: create `.env`
 
-Before running `scripts/install.sh` or `scripts/generate-ip-cert.sh`, copy the local env template and replace the placeholders with your own IP/hostname and TLS settings:
+Before running `scripts/install.sh`, `scripts/generate-ip-cert.sh`, or manual `docker compose` commands, copy the local env template and replace the placeholders with your own IP/hostname and TLS settings:
 
 ```bash
 cp .env.example .env
 $EDITOR .env
 ```
 
+This repo expects the root `.env` file to be set up first.
+
 At minimum, set `BANNKENN_PUBLIC_ADDRESS`. For self-signed TLS flows, also set `BANNKENN_TLS_SANS` to every IP/hostname agents or browsers will use.
 
-### 3. Start server + dashboard
+### 3. Start server + dashboard after `.env` is configured
 
 Recommended one-command HTTP setup:
 
@@ -56,6 +58,8 @@ Manual equivalent:
 ```bash
 docker compose -f docker/docker-compose.yml up -d --build
 ```
+
+The manual Compose path also reads the repo-root `.env`, so make sure you complete step 2 before starting the stack.
 
 Check health:
 
