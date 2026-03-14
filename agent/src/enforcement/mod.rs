@@ -2,6 +2,7 @@ pub mod cgroup;
 pub mod proc;
 pub mod tc;
 
+use crate::config::ContainmentConfig;
 use crate::enforcement::cgroup::CgroupEnforcer;
 use crate::enforcement::proc::ProcessEnforcer;
 use crate::enforcement::tc::TrafficControlEnforcer;
@@ -52,7 +53,7 @@ pub trait Enforcer: Send + Sync {
         -> EnforcementFuture<'a>;
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct EnforcementDispatcher {
     cgroup: CgroupEnforcer,
     tc: TrafficControlEnforcer,
@@ -60,6 +61,14 @@ pub struct EnforcementDispatcher {
 }
 
 impl EnforcementDispatcher {
+    pub fn from_config(config: &ContainmentConfig, server_url: &str) -> Self {
+        Self {
+            cgroup: CgroupEnforcer::new(config),
+            tc: TrafficControlEnforcer::new(config, server_url),
+            proc: ProcessEnforcer,
+        }
+    }
+
     pub async fn execute_all(
         &self,
         actions: &[EnforcementAction],
@@ -91,5 +100,12 @@ impl EnforcementDispatcher {
         enforcers
             .into_iter()
             .find(|enforcer| enforcer.supports(action))
+    }
+}
+
+impl Default for EnforcementDispatcher {
+    fn default() -> Self {
+        let config = ContainmentConfig::default();
+        Self::from_config(&config, "")
     }
 }

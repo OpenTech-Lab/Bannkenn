@@ -65,6 +65,8 @@
 - Added enforcement dispatch in `agent/src/enforcement/`: cgroup/tc backends are explicit dry-run-aware stubs for future work, while the proc backend can already issue `SIGSTOP`/`SIGCONT`/`SIGKILL` through `kill` when dry-run is disabled.
 - Wired containment decisions into the main agent loop so behavior events now drive state transitions and enforcement outcomes instead of only emitting “Phase 2 pending” logs.
 - Verified the Phase 2 slice with `cargo test -p bannkenn-agent` on 2026-03-14, including new transition/decay tests in `agent/src/containment.rs`.
+- Closed the next Phase 2 enforcement gap too: containment config now includes explicit cgroup/tc throttle defaults plus management-channel port exemptions, the runtime passes the configured server heartbeat endpoint into the enforcement dispatcher, `agent/src/enforcement/cgroup.rs` now applies real cgroup v2 `io.max` limits for throttled PIDs, and `agent/src/enforcement/tc.rs` now builds a real HTB throttle plan that keeps SSH plus the configured heartbeat endpoint on the fast lane.
+- Verified the enforcement follow-up with `cargo fmt`, `cargo test -p bannkenn-agent`, and `git diff --check` on 2026-03-14, including new unit coverage for cgroup device/`io.max` planning and tc management-channel allowlist command generation.
 
 ## Phase 2 — Containment State Machine + Throttling
 - [x] Create `agent/src/containment.rs` — state machine (NORMAL → SUSPICIOUS → THROTTLE → FUSE)
@@ -74,7 +76,7 @@
 - [x] Create `agent/src/enforcement/tc.rs` — network shaping via tc/netem
 - [x] Create `agent/src/enforcement/proc.rs` — process suspend/kill (SIGSTOP/SIGKILL)
 - [x] Implement decay paths (FUSE → THROTTLE after auto_fuse_release_min)
-- [ ] Management channel allowlist (SSH, agent heartbeat exempt from network isolation)
+- [x] Management channel allowlist (SSH, agent heartbeat exempt from network isolation)
 - [ ] Integration test: score > 60 triggers throttle, score > 90 triggers fuse
 
 ### Phase 2 Execution Slice — 2026-03-14
@@ -84,6 +86,14 @@
 - [x] Add enforcement trait/dispatch with dry-run-aware process actions first
 - [x] Wire containment decisions into the runtime instead of logging "Phase 2 pending"
 - [x] Add targeted tests for state transitions, rate limiting, and fuse decay
+- [x] Verify with targeted `cargo test -p bannkenn-agent`
+
+### Phase 2 Enforcement Follow-Up Slice — 2026-03-14
+- [x] Add explicit containment config defaults for cgroup/tc throttle rates and management-channel exemptions
+- [x] Teach the containment runtime/enforcement dispatcher about the configured heartbeat endpoint so management traffic can stay exempt
+- [x] Replace the cgroup v2 I/O throttle stub with a real `io.max` application path for throttled PIDs
+- [x] Replace the tc/netem stub with a real host-level tc throttle plan that preserves SSH and heartbeat traffic
+- [x] Add focused tests for throttle-plan generation and management-channel allowlist behavior
 - [x] Verify with targeted `cargo test -p bannkenn-agent`
 
 ## Phase 3 — Server Enhancements

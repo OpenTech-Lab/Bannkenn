@@ -22,6 +22,16 @@ pub struct ContainmentConfig {
     pub fuse_enabled: bool,
     #[serde(default = "default_auto_fuse_release_min")]
     pub auto_fuse_release_min: u64,
+    #[serde(default = "default_throttle_io_read_bps")]
+    pub throttle_io_read_bps: u64,
+    #[serde(default = "default_throttle_io_write_bps")]
+    pub throttle_io_write_bps: u64,
+    #[serde(default = "default_throttle_network_kbit")]
+    pub throttle_network_kbit: u32,
+    #[serde(default)]
+    pub throttle_network_interface: Option<String>,
+    #[serde(default = "default_management_allow_ports")]
+    pub management_allow_ports: Vec<u16>,
     #[serde(default)]
     pub watch_paths: Vec<String>,
     #[serde(default = "default_poll_interval_ms")]
@@ -62,6 +72,11 @@ impl Default for ContainmentConfig {
             throttle_enabled: false,
             fuse_enabled: false,
             auto_fuse_release_min: default_auto_fuse_release_min(),
+            throttle_io_read_bps: default_throttle_io_read_bps(),
+            throttle_io_write_bps: default_throttle_io_write_bps(),
+            throttle_network_kbit: default_throttle_network_kbit(),
+            throttle_network_interface: None,
+            management_allow_ports: default_management_allow_ports(),
             watch_paths: Vec::new(),
             poll_interval_ms: default_poll_interval_ms(),
             protected_paths: Vec::new(),
@@ -156,6 +171,22 @@ fn default_true() -> bool {
 
 fn default_auto_fuse_release_min() -> u64 {
     15
+}
+
+fn default_throttle_io_read_bps() -> u64 {
+    4 * 1024 * 1024
+}
+
+fn default_throttle_io_write_bps() -> u64 {
+    1024 * 1024
+}
+
+fn default_throttle_network_kbit() -> u32 {
+    1024
+}
+
+fn default_management_allow_ports() -> Vec<u16> {
+    vec![22]
 }
 
 fn default_poll_interval_ms() -> u64 {
@@ -429,6 +460,10 @@ mod tests {
         assert!(containment.dry_run);
         assert!(!containment.fuse_enabled);
         assert_eq!(containment.suspicious_score, 30);
+        assert_eq!(containment.throttle_io_read_bps, 4 * 1024 * 1024);
+        assert_eq!(containment.throttle_io_write_bps, 1024 * 1024);
+        assert_eq!(containment.throttle_network_kbit, 1024);
+        assert_eq!(containment.management_allow_ports, vec![22]);
         assert!(containment
             .protected_pid_allowlist
             .contains(&"bannkenn-agent".to_string()));

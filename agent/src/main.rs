@@ -394,10 +394,7 @@ async fn run() -> Result<()> {
     let outbox_notify = Arc::new(Notify::new());
 
     let config_arc = Arc::new(config);
-    let containment_runtime = config_arc
-        .containment
-        .as_ref()
-        .and_then(ContainmentRuntime::from_config);
+    let containment_runtime = ContainmentRuntime::from_agent_config(config_arc.as_ref());
     let mut containment_tick = containment_runtime
         .as_ref()
         .map(|_| interval(Duration::from_secs(CONTAINMENT_TICK_INTERVAL_SECS)));

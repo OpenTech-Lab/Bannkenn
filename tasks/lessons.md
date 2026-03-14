@@ -185,6 +185,10 @@
 - If `connect`/`init` are usually run with `sudo`, the systemd unit must explicitly use root’s state home and should prefer the canonical installed binary path instead of whichever executable path happened to invoke the installer.
 - Otherwise a manual `sudo bannkenn-agent connect` can appear successful while the service still runs a different binary or looks in a different home for `agent.toml` and pinned certs, leaving heartbeats offline.
 
+### When follow-up gaps are identified, track them in `tasks/todo.md` before continuing implementation
+- If a phase summary calls out concrete remaining gaps, add them as explicit tasks in `tasks/todo.md` before picking the work back up.
+- Do not leave actionable follow-up only in prose or final-answer caveats; keep the repo task log aligned with the implementation queue.
+
 ### Sensitive-data cleanup needs separate checks for the working tree and git history
 - A repo can already have the live file sanitized while the sensitive value still exists in earlier commits.
 - For requests to remove exposed IPs, tokens, or hostnames, verify both the current file contents and `git rev-list`/history matches before deciding whether to edit files, rewrite history, or both.

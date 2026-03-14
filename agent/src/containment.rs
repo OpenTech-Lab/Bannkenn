@@ -1,4 +1,4 @@
-use crate::config::ContainmentConfig;
+use crate::config::{AgentConfig, ContainmentConfig};
 use crate::ebpf::events::{BehaviorEvent, BehaviorLevel};
 use crate::enforcement::{EnforcementAction, EnforcementDispatcher, EnforcementOutcome};
 use anyhow::Result;
@@ -74,14 +74,15 @@ pub struct ContainmentCoordinator {
 }
 
 impl ContainmentRuntime {
-    pub fn from_config(config: &ContainmentConfig) -> Option<Self> {
+    pub fn from_agent_config(agent_config: &AgentConfig) -> Option<Self> {
+        let config = agent_config.containment.as_ref()?;
         if !config.enabled {
             return None;
         }
 
         Some(Self {
             coordinator: Arc::new(Mutex::new(ContainmentCoordinator::new(config))),
-            dispatcher: EnforcementDispatcher::default(),
+            dispatcher: EnforcementDispatcher::from_config(config, &agent_config.server_url),
             dry_run: config.dry_run,
         })
     }
