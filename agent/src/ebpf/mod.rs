@@ -32,7 +32,11 @@ const USERSPACE_SENSOR_SOURCE: &str = "userspace_polling";
 const AYA_SENSOR_SOURCE: &str = "aya_ringbuf";
 const AYA_WATCH_ROOTS_MAP: &str = "BK_WATCH_ROOTS";
 const AYA_PROTECTED_ROOTS_MAP: &str = "BK_PROTECTED_ROOTS";
-const AYA_DEFAULT_OBJECT_CANDIDATES: &[&str] = &["agent/ebpf/bannkenn-containment.bpf.o"];
+const AYA_DEFAULT_OBJECT_CANDIDATES: &[&str] = &[
+    "agent/ebpf/bannkenn-containment.bpf.o",
+    "/usr/lib/bannkenn/ebpf/bannkenn-containment.bpf.o",
+    "/usr/local/lib/bannkenn/ebpf/bannkenn-containment.bpf.o",
+];
 const AYA_PATH_PREFIX_CAPACITY: u32 = 16;
 const AYA_TRACE_ATTACHMENTS: &[(&str, &str, &str)] = &[
     ("bk_sched_exec", "sched", "sched_process_exec"),

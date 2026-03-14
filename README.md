@@ -252,16 +252,29 @@ sudo bash scripts/install.sh
 
 This installs:
 - binary: `/usr/local/bin/bannkenn-agent`
+- containment BPF object, when `clang` and Linux headers are available: `/usr/lib/bannkenn/ebpf/bannkenn-containment.bpf.o`
 - service binary only; `bannkenn-agent init` installs `bannkenn-agent.service`
+
+Containment prerequisites for the Aya/eBPF path:
+- Linux kernel 5.8 or newer
+- `clang`
+- Linux libc/kernel headers that provide `/usr/include/linux/bpf.h`
+
+If those prerequisites are missing, the source installer now warns and continues. The agent still installs, but containment falls back to the userspace polling backend until the BPF object is built and installed.
 
 Option B: install from GitHub Release URL (Linux x64 example)
 
 ```bash
 VERSION=v1.0.0
 curl -fL "https://github.com/OpenTech-Lab/bannkenn/releases/download/${VERSION}/bannkenn-agent-linux-x64" -o bannkenn-agent
+curl -fL "https://github.com/OpenTech-Lab/bannkenn/releases/download/${VERSION}/bannkenn-containment-linux-x64.bpf.o" -o bannkenn-containment.bpf.o
 chmod +x bannkenn-agent
 sudo mv bannkenn-agent /usr/local/bin/bannkenn-agent
+sudo install -d /usr/lib/bannkenn/ebpf
+sudo mv bannkenn-containment.bpf.o /usr/lib/bannkenn/ebpf/bannkenn-containment.bpf.o
 ```
+
+For Linux release installs, containment uses the separately published `.bpf.o` asset. If you install only the binary, the agent still works, but containment falls back to userspace polling until the object is placed at `/usr/lib/bannkenn/ebpf/bannkenn-containment.bpf.o`.
 
 Update an installed agent:
 
@@ -278,8 +291,11 @@ Linux ARM64:
 ```bash
 VERSION=v1.0.0
 curl -fL "https://github.com/OpenTech-Lab/bannkenn/releases/download/${VERSION}/bannkenn-agent-linux-arm64" -o bannkenn-agent
+curl -fL "https://github.com/OpenTech-Lab/bannkenn/releases/download/${VERSION}/bannkenn-containment-linux-arm64.bpf.o" -o bannkenn-containment.bpf.o
 chmod +x bannkenn-agent
 sudo mv bannkenn-agent /usr/local/bin/bannkenn-agent
+sudo install -d /usr/lib/bannkenn/ebpf
+sudo mv bannkenn-containment.bpf.o /usr/lib/bannkenn/ebpf/bannkenn-containment.bpf.o
 ```
 
 Windows PowerShell:

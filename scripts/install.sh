@@ -26,6 +26,9 @@ load_repo_env
 
 BINARY_NAME="bannkenn-agent"
 INSTALL_DIR="/usr/local/bin"
+INSTALL_LIB_DIR="/usr/lib/bannkenn"
+EBPF_INSTALL_DIR="${BANNKENN_EBPF_INSTALL_DIR:-$INSTALL_LIB_DIR/ebpf}"
+EBPF_OBJECT_NAME="bannkenn-containment.bpf.o"
 CONFIG_DIR="/root/.config/bannkenn"
 VERSION="${BANNKENN_VERSION:-latest}"
 DEFAULT_TLS_DIR="${BANNKENN_TLS_DIR:-/etc/bannkenn/tls}"
@@ -130,6 +133,41 @@ require_command() {
 require_docker_compose() {
     require_command docker
     docker compose version >/dev/null 2>&1 || error "docker compose is required"
+}
+
+kernel_version_at_least() {
+    local raw_version="${1%%[-+]*}"
+    local required_major="$2"
+    local required_minor="$3"
+    local major="${raw_version%%.*}"
+    local remainder="${raw_version#*.}"
+    local minor="${remainder%%.*}"
+
+    [[ "$major" =~ ^[0-9]+$ ]] || return 1
+    [[ "$minor" =~ ^[0-9]+$ ]] || minor=0
+
+    if (( major > required_major )); then
+        return 0
+    fi
+    if (( major < required_major )); then
+        return 1
+    fi
+    (( minor >= required_minor ))
+}
+
+check_containment_prereqs() {
+    local kernel_release
+    kernel_release="$(uname -r)"
+
+    if kernel_version_at_least "$kernel_release" 5 8; then
+        info "Kernel $kernel_release satisfies containment minimum (Linux 5.8+)"
+    else
+        warn "Kernel $kernel_release is older than the containment minimum (Linux 5.8+); Aya-based containment will stay unavailable on this host"
+    fi
+
+    if ! command -v clang >/dev/null 2>&1; then
+        warn "clang not found; the containment BPF object will not be built during source install"
+    fi
 }
 
 prepare_server_vendor_tree() {
@@ -279,6 +317,31 @@ install_from_cargo() {
 
     install -m 755 "$REPO_ROOT/target/release/bannkenn-agent" "$INSTALL_DIR/$BINARY_NAME"
     info "Installed to $INSTALL_DIR/$BINARY_NAME"
+}
+
+install_ebpf_object() {
+    local build_user="${SUDO_USER:-$USER}"
+    local source_object="$REPO_ROOT/agent/ebpf/$EBPF_OBJECT_NAME"
+
+    if ! command -v clang >/dev/null 2>&1; then
+        warn "Skipping containment BPF build because clang is not installed"
+        return 0
+    fi
+
+    info "Building containment BPF object as '$build_user' from $REPO_ROOT ..."
+    if ! sudo -iu "$build_user" bash -lc 'export PATH="$HOME/.cargo/bin:$PATH"; cd "'"$REPO_ROOT"'"; ./scripts/build-ebpf.sh'; then
+        warn "Containment BPF build failed; the agent will fall back to userspace polling until $EBPF_OBJECT_NAME is installed manually"
+        return 0
+    fi
+
+    if [[ ! -f "$source_object" ]]; then
+        warn "Containment BPF build did not produce $source_object"
+        return 0
+    fi
+
+    install -d "$EBPF_INSTALL_DIR"
+    install -m 644 "$source_object" "$EBPF_INSTALL_DIR/$EBPF_OBJECT_NAME"
+    info "Installed containment BPF object to $EBPF_INSTALL_DIR/$EBPF_OBJECT_NAME"
 }
 
 deploy_dashboard_http() {
@@ -468,9 +531,11 @@ main() {
     local firewall
     firewall=$(detect_firewall)
     info "Detected firewall: $firewall"
+    check_containment_prereqs
 
     # Install binary
     install_from_cargo
+    install_ebpf_object
 
     # Create root config directory (service runs as root for firewall access)
     mkdir -p "$CONFIG_DIR"
@@ -481,6 +546,7 @@ main() {
     info "  1. sudo bannkenn-agent init     — configure the agent, install the systemd unit, and register if the dashboard is reachable"
     info "  2. sudo systemctl enable --now bannkenn-agent"
     info "  3. if registration failed during init: sudo bannkenn-agent connect && sudo systemctl restart bannkenn-agent"
+    info "Containment eBPF object path (if built): $EBPF_INSTALL_DIR/$EBPF_OBJECT_NAME"
 }
 
 main "$@"

@@ -36,6 +36,19 @@
 - [x] Verify the vendored/offline Cargo path still passes after adding Aya
 - [x] Verify the BPF object compiles and exposes the expected tracepoint/map symbols
 
+### Deployment Follow-Up Slice — 2026-03-14
+- [x] Make `scripts/build-ebpf.sh` portable enough for source installs on supported Linux hosts
+- [x] Install the built BPF object into a stable system path during `scripts/install.sh`
+- [x] Teach the Aya loader to auto-discover the installed system object path
+- [x] Add installer-side Linux kernel version guardrails for containment prerequisites
+- [x] Update operator docs for the new source-install containment artifact path
+- [x] Verify the installer/build script changes with targeted local checks
+
+### CI / Release Follow-Up Slice — 2026-03-14
+- [x] Teach Linux CI jobs to build the containment BPF object explicitly
+- [x] Teach Linux release jobs to publish the BPF object as a release artifact alongside the binary
+- [x] Verify the workflow changes are internally consistent with the current release asset naming
+
 ### Review
 - Implemented a compileable Phase 1 slice in the agent: containment config, a separate behavior-event pipeline, userspace file polling, `/proc`-based process correlation, and composite behavior scoring.
 - Tightened the Phase 1 architecture with a lifecycle tracker for watched-root processes and a backend abstraction so the future Aya/ring-buffer path has a clean integration point.
@@ -43,7 +56,11 @@
 - Extended the Aya loader so it populates the kernel prefix maps, auto-detects the repo-local `agent/ebpf/bannkenn-containment.bpf.o` artifact when present, and converts exec/exit ring events into lifecycle hints without disturbing the userspace polling fallback.
 - Added `scripts/build-ebpf.sh` and verified on 2026-03-14 that it produces a BTF-enabled object whose symbol table exposes the expected `bk_*` programs and `BK_EVENTS`/`BK_WATCH_ROOTS`/`BK_PROTECTED_ROOTS` maps.
 - Verified with `cargo test -p bannkenn-agent`, `./scripts/build-ebpf.sh`, and `readelf` inspection on 2026-03-14: all agent tests passed, and the generated BPF ELF matches the loader contract.
-- Remaining containment follow-up is now packaging/runtime validation: bundle the object in Docker/installer flows, and exercise actual privileged attachment on a Linux host with root and the needed kernel capabilities.
+- Closed the source-install/runtime follow-up too: `scripts/build-ebpf.sh` now resolves multiarch include directories and supports custom output paths, `scripts/install.sh` warns on kernel/toolchain gaps and installs the BPF object to `/usr/lib/bannkenn/ebpf/`, and the Aya loader auto-discovers that installed path.
+- Verified the deployment follow-up with `bash -n scripts/build-ebpf.sh scripts/install.sh`, `./scripts/build-ebpf.sh --out /tmp/bannkenn-containment-test.bpf.o`, and `cargo test -p bannkenn-agent` on 2026-03-14.
+- Extended the release pipeline too: Linux CI now builds the containment BPF object explicitly, Linux release jobs publish matching `bannkenn-containment-linux-*.bpf.o` assets, and the README release-install instructions document where to place them on disk.
+- Verified the CI/release follow-up with a naming consistency check across `.github/workflows/release.yml` and `README.md`, plus `git diff --check`, on 2026-03-14.
+- Remaining containment follow-up is now the truly missing edge: add an eBPF-aware Docker build path if containerized agent packaging is needed, teach the agent updater to fetch/install the matching `.bpf.o` asset, and exercise actual attachment on a Linux host with root and the needed kernel capabilities.
 
 ## Phase 2 — Containment State Machine + Throttling
 - [ ] Create `agent/src/containment.rs` — state machine (NORMAL → SUSPICIOUS → THROTTLE → FUSE)
@@ -74,8 +91,8 @@
 
 ## Deployment
 - [ ] Add eBPF build stage to Docker (linux-headers, clang, llvm)
-- [ ] Feature flags default: enabled=false, dry_run=true, fuse_enabled=false
-- [ ] Update installer for kernel version check (Linux 5.8+ required)
+- [x] Feature flags default: enabled=false, dry_run=true, fuse_enabled=false
+- [x] Update installer for kernel version check (Linux 5.8+ required)
 - [ ] Rollback documentation
 
 ---
