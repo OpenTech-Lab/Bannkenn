@@ -3,8 +3,10 @@ mod butterfly;
 mod campaign;
 mod client;
 mod config;
+mod containment;
 mod correlator;
 mod ebpf;
+mod enforcement;
 mod event_risk;
 mod firewall;
 mod geoip;
@@ -39,6 +41,7 @@ use crate::config::{
     default_runtime_campaign_config, default_runtime_containment_config, AgentConfig,
     ContainmentConfig, OfflineAgentState,
 };
+use crate::containment::{ContainmentDecision, ContainmentRuntime, CONTAINMENT_TICK_INTERVAL_SECS};
 use crate::ebpf::events::{BehaviorEvent, BehaviorLevel};
 use crate::ebpf::SensorManager;
 use crate::firewall::{
@@ -391,6 +394,16 @@ async fn run() -> Result<()> {
     let outbox_notify = Arc::new(Notify::new());
 
     let config_arc = Arc::new(config);
+    let containment_runtime = config_arc
+        .containment
+        .as_ref()
+        .and_then(ContainmentRuntime::from_config);
+    let mut containment_tick = containment_runtime
+        .as_ref()
+        .map(|_| interval(Duration::from_secs(CONTAINMENT_TICK_INTERVAL_SECS)));
+    if let Some(ticker) = containment_tick.as_mut() {
+        ticker.tick().await;
+    }
 
     let config_for_watcher = Arc::clone(&config_arc);
     let known_ips_for_watcher = Arc::clone(&known_blocked_ips);
@@ -506,7 +519,21 @@ async fn run() -> Result<()> {
             maybe_behavior = behavior_rx.recv(), if behavior_channel_open => {
                 match maybe_behavior {
                     Some(event) => {
-                        handle_behavior_event(&event, config_arc.containment.as_ref());
+                        log_behavior_event(&event, config_arc.containment.as_ref());
+                        if let Some(runtime) = containment_runtime.as_ref() {
+                            match runtime.handle_event(&event).await {
+                                Ok(Some(decision)) => log_containment_decision(&decision),
+                                Ok(None) => {}
+                                Err(error) => tracing::warn!(
+                                    "Containment runtime failed for behavior event pid={} score={}: {}",
+                                    event.pid
+                                        .map(|pid| pid.to_string())
+                                        .unwrap_or_else(|| "unknown".to_string()),
+                                    event.score,
+                                    error
+                                ),
+                            }
+                        }
                         None
                     }
                     None => {
@@ -514,6 +541,20 @@ async fn run() -> Result<()> {
                         None
                     }
                 }
+            }
+            _ = async {
+                if let Some(ticker) = containment_tick.as_mut() {
+                    ticker.tick().await;
+                }
+            }, if containment_runtime.is_some() => {
+                if let Some(runtime) = containment_runtime.as_ref() {
+                    match runtime.tick().await {
+                        Ok(Some(decision)) => log_containment_decision(&decision),
+                        Ok(None) => {}
+                        Err(error) => tracing::warn!("Containment timer tick failed: {}", error),
+                    }
+                }
+                None
             }
             reason = &mut shutdown => {
                 shutdown_reason = Some(reason);
@@ -781,7 +822,7 @@ async fn enqueue_outbox(outbox: &Arc<Mutex<Outbox>>, payload: OutboxPayload, not
     }
 }
 
-fn handle_behavior_event(event: &BehaviorEvent, containment: Option<&ContainmentConfig>) {
+fn log_behavior_event(event: &BehaviorEvent, containment: Option<&ContainmentConfig>) {
     let process = event
         .exe_path
         .as_deref()
@@ -799,7 +840,7 @@ fn handle_behavior_event(event: &BehaviorEvent, containment: Option<&Containment
                 .map(|cfg| cfg.throttle_enabled && !cfg.dry_run)
                 .unwrap_or(false)
             {
-                "throttle-ready (Phase 2 pending)"
+                "throttle-active"
             } else {
                 "dry-run throttle candidate"
             }
@@ -809,7 +850,7 @@ fn handle_behavior_event(event: &BehaviorEvent, containment: Option<&Containment
                 .map(|cfg| cfg.fuse_enabled && !cfg.dry_run)
                 .unwrap_or(false)
             {
-                "fuse-ready (Phase 2 pending)"
+                "fuse-active"
             } else {
                 "dry-run fuse candidate"
             }
@@ -859,6 +900,45 @@ fn handle_behavior_event(event: &BehaviorEvent, containment: Option<&Containment
             reasons,
             enforcement_mode
         ),
+    }
+}
+
+fn log_containment_decision(decision: &ContainmentDecision) {
+    if let Some(transition) = decision.transition.as_ref() {
+        tracing::warn!(
+            "Containment transition: {} -> {} pid={} score={} root={} reason={}",
+            transition.from.as_str(),
+            transition.to.as_str(),
+            transition
+                .pid
+                .map(|pid| pid.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            transition.score,
+            transition.watched_root,
+            transition.reason
+        );
+    }
+
+    for outcome in &decision.outcomes {
+        if outcome.applied {
+            tracing::warn!(
+                action = ?outcome.action,
+                enforcer = outcome.enforcer.as_str(),
+                applied = outcome.applied,
+                dry_run = outcome.dry_run,
+                detail = outcome.detail.as_str(),
+                "Containment enforcement outcome"
+            );
+        } else {
+            tracing::info!(
+                action = ?outcome.action,
+                enforcer = outcome.enforcer.as_str(),
+                applied = outcome.applied,
+                dry_run = outcome.dry_run,
+                detail = outcome.detail.as_str(),
+                "Containment enforcement outcome"
+            );
+        }
     }
 }
 

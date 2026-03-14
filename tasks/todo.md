@@ -61,17 +61,30 @@
 - Extended the release pipeline too: Linux CI now builds the containment BPF object explicitly, Linux release jobs publish matching `bannkenn-containment-linux-*.bpf.o` assets, and the README release-install instructions document where to place them on disk.
 - Verified the CI/release follow-up with a naming consistency check across `.github/workflows/release.yml` and `README.md`, plus `git diff --check`, on 2026-03-14.
 - Remaining containment follow-up is now the truly missing edge: add an eBPF-aware Docker build path if containerized agent packaging is needed, teach the agent updater to fetch/install the matching `.bpf.o` asset, and exercise actual attachment on a Linux host with root and the needed kernel capabilities.
+- Added a first real Phase 2 runtime slice: `agent/src/containment.rs` now owns containment state, upward escalation, 60-second transition dampening for decay, and automatic FUSE release back to THROTTLE/SUSPICIOUS after `auto_fuse_release_min`.
+- Added enforcement dispatch in `agent/src/enforcement/`: cgroup/tc backends are explicit dry-run-aware stubs for future work, while the proc backend can already issue `SIGSTOP`/`SIGCONT`/`SIGKILL` through `kill` when dry-run is disabled.
+- Wired containment decisions into the main agent loop so behavior events now drive state transitions and enforcement outcomes instead of only emitting “Phase 2 pending” logs.
+- Verified the Phase 2 slice with `cargo test -p bannkenn-agent` on 2026-03-14, including new transition/decay tests in `agent/src/containment.rs`.
 
 ## Phase 2 — Containment State Machine + Throttling
-- [ ] Create `agent/src/containment.rs` — state machine (NORMAL → SUSPICIOUS → THROTTLE → FUSE)
-- [ ] Mutex-protected transitions with 60s rate limiting
-- [ ] Create `agent/src/enforcement/mod.rs` — trait + dispatch
-- [ ] Create `agent/src/enforcement/cgroup.rs` — I/O throttling via cgroups v2
-- [ ] Create `agent/src/enforcement/tc.rs` — network shaping via tc/netem
-- [ ] Create `agent/src/enforcement/proc.rs` — process suspend/kill (SIGSTOP/SIGKILL)
-- [ ] Implement decay paths (FUSE → THROTTLE after auto_fuse_release_min)
+- [x] Create `agent/src/containment.rs` — state machine (NORMAL → SUSPICIOUS → THROTTLE → FUSE)
+- [x] Mutex-protected transitions with 60s rate limiting
+- [x] Create `agent/src/enforcement/mod.rs` — trait + dispatch
+- [x] Create `agent/src/enforcement/cgroup.rs` — I/O throttling via cgroups v2
+- [x] Create `agent/src/enforcement/tc.rs` — network shaping via tc/netem
+- [x] Create `agent/src/enforcement/proc.rs` — process suspend/kill (SIGSTOP/SIGKILL)
+- [x] Implement decay paths (FUSE → THROTTLE after auto_fuse_release_min)
 - [ ] Management channel allowlist (SSH, agent heartbeat exempt from network isolation)
 - [ ] Integration test: score > 60 triggers throttle, score > 90 triggers fuse
+
+### Phase 2 Execution Slice — 2026-03-14
+- [x] Add a containment coordinator/state machine module wired to `BehaviorEvent`s
+- [x] Enforce transition rate limiting so repeated high-score events do not thrash containment state
+- [x] Implement fuse decay back to throttle after `auto_fuse_release_min`
+- [x] Add enforcement trait/dispatch with dry-run-aware process actions first
+- [x] Wire containment decisions into the runtime instead of logging "Phase 2 pending"
+- [x] Add targeted tests for state transitions, rate limiting, and fuse decay
+- [x] Verify with targeted `cargo test -p bannkenn-agent`
 
 ## Phase 3 — Server Enhancements
 - [ ] Add behavior event ingestion endpoint (POST /api/v1/behavior_events)
@@ -94,6 +107,11 @@
 - [x] Feature flags default: enabled=false, dry_run=true, fuse_enabled=false
 - [x] Update installer for kernel version check (Linux 5.8+ required)
 - [ ] Rollback documentation
+
+## Optional Deployment / Runtime Follow-Up
+- [ ] Teach `bannkenn-agent update` to fetch/install the matching `.bpf.o` release asset
+- [ ] Add a Dockerized agent build/package path that includes the containment BPF object when containerized agent distribution is needed
+- [ ] Exercise real privileged eBPF attachment on a Linux host and document the exact runtime capability requirements
 
 ---
 
