@@ -58,7 +58,7 @@ pub fn render_systemd_unit(binary_path: &Path) -> String {
     )
 }
 
-fn resolve_service_binary_path(binary_path: &Path) -> &Path {
+pub(crate) fn resolve_service_binary_path(binary_path: &Path) -> &Path {
     let installed_path = Path::new(DEFAULT_SYSTEM_BINARY_PATH);
     if installed_path.exists() {
         installed_path

@@ -15,6 +15,7 @@ pub mod patterns;
 pub mod reporting;
 pub mod risk_level;
 pub mod scorer;
+pub mod service;
 pub mod shared_risk;
 pub mod tofu;
 pub mod updater;

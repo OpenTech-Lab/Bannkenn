@@ -1,3 +1,4 @@
+use crate::service::{install_systemd_unit, resolve_service_binary_path, SERVICE_UNIT_PATH};
 use anyhow::{anyhow, Context, Result};
 use reqwest::{header::LOCATION, redirect::Policy, Client};
 use std::env;
@@ -21,7 +22,8 @@ pub async fn update(version: Option<&str>) -> Result<()> {
     }
 
     let download_url = release_download_url(version, asset_name)?;
-    let target_path = env::current_exe().context("Could not determine current executable path")?;
+    let current_exe = env::current_exe().context("Could not determine current executable path")?;
+    let target_path = resolve_service_binary_path(&current_exe).to_path_buf();
 
     tracing::info!(
         "Updating bannkenn-agent {} using {}",
@@ -52,6 +54,7 @@ pub async fn update(version: Option<&str>) -> Result<()> {
         release_version_from_url(&resolved_url).unwrap_or_else(|| target_version.clone());
 
     install_binary(&target_path, &bytes).await?;
+    let refreshed_service_unit = refresh_service_unit_after_update(&target_path)?;
     let restarted = restart_service_if_active().await?;
 
     println!(
@@ -60,6 +63,9 @@ pub async fn update(version: Option<&str>) -> Result<()> {
         resolved_release,
         target_path.display()
     );
+    if refreshed_service_unit {
+        println!("Refreshed systemd unit: {}", SERVICE_UNIT_PATH);
+    }
     if restarted {
         println!("Restarted systemd service: bannkenn-agent");
     } else {
@@ -176,6 +182,11 @@ fn temp_install_path(target_path: &Path) -> PathBuf {
         .and_then(|name| name.to_str())
         .unwrap_or("bannkenn-agent");
     target_path.with_file_name(format!(".{}.update-{}", name, std::process::id()))
+}
+
+fn refresh_service_unit_after_update(target_path: &Path) -> Result<bool> {
+    install_systemd_unit(target_path)
+        .with_context(|| format!("Failed to refresh {}", SERVICE_UNIT_PATH))
 }
 
 async fn restart_service_if_active() -> Result<bool> {

@@ -219,3 +219,7 @@
 - If the project ships a Windows target, do not add Linux-only crates like `aya` as unconditional dependencies; move them into `[target.'cfg(target_os = "linux")'.dependencies]` or a Linux-only feature boundary.
 - Mirror that split in source: gate Linux-only imports, trait impls, structs, and helper functions with `#[cfg(target_os = "linux")]`, and provide a clean non-Linux fallback path instead of relying on runtime `unreachable!()`.
 - When the local machine lacks the foreign stdlib, verify the target split with `cargo tree --target ...` in addition to native `cargo check`/`clippy` so target-specific dependency leaks are still caught before CI.
+
+### Self-update must target the managed service binary, not just the currently running executable
+- If a systemd unit prefers `/usr/local/bin/bannkenn-agent`, `sudo bannkenn-agent update` must resolve and replace that managed path even when the invoking shell found a different copy on `PATH`.
+- Refresh the systemd unit during self-update before restart so the background service stays pinned to the same binary/config path used by `init` and `connect`; otherwise manual diagnostics can succeed while heartbeats from the service stay offline.

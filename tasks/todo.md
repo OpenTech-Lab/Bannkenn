@@ -27,6 +27,16 @@
 - Gated Aya-specific `Pod` impls, imports, constants, structs, and helper functions behind `target_os = "linux"`, and made `SensorManager::from_config` disable the containment sensor cleanly on non-Linux targets.
 - Verified on 2026-03-15 with `cargo fmt --all`, `cargo check -p bannkenn-agent`, `cargo clippy -p bannkenn-agent -- -D warnings`, and `cargo tree -p bannkenn-agent --target x86_64-pc-windows-msvc -e normal` (which no longer includes `aya` on the Windows dependency graph). The runner does not have the Windows stdlib installed, so a real local `--target x86_64-pc-windows-msvc` build was not possible here.
 
+## Agent Update Heartbeat Regression Slice — 2026-03-15
+- [x] Make self-update replace the same binary path used by the managed systemd service
+- [x] Refresh the systemd unit during self-update before restart
+- [x] Verify the updater/service path logic with targeted agent checks
+
+### Review
+- The self-updater now resolves the same managed binary path that the systemd unit uses instead of blindly replacing `current_exe()`, so `sudo bannkenn-agent update` no longer drifts away from the background service binary.
+- The updater also refreshes `/etc/systemd/system/bannkenn-agent.service` before deciding whether to restart, keeping the service pinned to the same binary/config path that `init` and `connect` use.
+- Verified on 2026-03-15 with `cargo fmt --all`, `cargo test -p bannkenn-agent`, and `cargo clippy -p bannkenn-agent -- -D warnings`.
+
 ## Phase 1 — eBPF Sensor + File Activity Detection
 - [x] Add `aya` and `aya-log` to agent/Cargo.toml
 - [x] Create `agent/src/ebpf/mod.rs` — sensor management, ring buffer polling
