@@ -159,7 +159,12 @@ async fn ensure_whitelisted_ip_override(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
 
     let cli = Cli::parse();
 
@@ -247,6 +252,29 @@ async fn run() -> Result<()> {
         config.jwt_token.clone(),
         config.ca_cert_path.clone(),
     )?;
+
+    // Start heartbeat immediately — don't wait for blocklist loading.
+    let heartbeat_client = ApiClient::new(
+        config.server_url.clone(),
+        config.jwt_token.clone(),
+        config.ca_cert_path.clone(),
+    )?;
+    let butterfly_enabled = config.butterfly_shield.as_ref().map(|c| c.enabled);
+    let heartbeat_handle = tokio::spawn(async move {
+        let mut ticker = interval(Duration::from_secs(30));
+        ticker.tick().await;
+
+        loop {
+            match heartbeat_client.send_heartbeat(butterfly_enabled).await {
+                Ok(_) => tracing::debug!("Heartbeat sent"),
+                Err(e) => tracing::warn!("Failed to send heartbeat: {}", e),
+            }
+
+            ticker.tick().await;
+        }
+    });
+    tracing::info!("Heartbeat started (30s interval)");
+
     let offline_state_path = OfflineAgentState::state_path()?;
     let offline_state = OfflineAgentState::load(&offline_state_path);
 
@@ -265,31 +293,24 @@ async fn run() -> Result<()> {
     let shared_risk_snapshot: Arc<RwLock<SharedRiskSnapshot>> =
         Arc::new(RwLock::new(offline_state.shared_risk_snapshot.clone()));
 
+    // Populate data structures synchronously (fast HashMap/HashSet ops only).
+    // Whitelist from offline cache:
     {
         let whitelist_snapshot = whitelisted_ips.read().await.clone();
-        let desired_whitelist_patterns = desired_whitelist_patterns(&whitelist_snapshot);
-        let whitelist_summary = reconcile_whitelist_ips(
-            &desired_whitelist_patterns,
-            &enforced_whitelisted_ips,
-            &backend,
-        )
-        .await;
         if !whitelist_snapshot.is_empty() {
             known_blocked_ips
                 .write()
                 .await
                 .retain(|ip, _| !pattern_set_covers_pattern(&whitelist_snapshot, ip));
             tracing::info!(
-                "Loaded {} whitelisted IP(s) from offline cache ({} firewall allow(s) added, {} removed, {} add failures, {} remove failures)",
-                whitelist_snapshot.len(),
-                whitelist_summary.added,
-                whitelist_summary.removed,
-                whitelist_summary.add_failed,
-                whitelist_summary.remove_failed
+                "Loaded {} whitelisted IP(s) from offline cache",
+                whitelist_snapshot.len()
             );
         }
     }
 
+    // Fetch whitelist + decisions + shared risk from server (fast network calls).
+    // Populate known_blocked_ips/whitelisted_ips data but defer nftables loading.
     let init_client = ApiClient::new(
         config.server_url.clone(),
         config.jwt_token.clone(),
@@ -311,32 +332,7 @@ async fn run() -> Result<()> {
         Err(e) => tracing::warn!("Failed to load initial whitelist: {}", e),
     }
 
-    if !offline_state.known_blocked_ips.is_empty() {
-        let whitelist_snapshot = whitelisted_ips.read().await.clone();
-        let (desired_patterns, skipped_local, skipped_whitelist, collapsed_overlaps) = {
-            let known = known_blocked_ips.read().await;
-            desired_firewall_patterns(&known, &whitelist_snapshot)
-        };
-        let summary =
-            reconcile_block_patterns(&desired_patterns, &enforced_blocked_ips, &backend).await;
-        tracing::info!(
-            "Loaded cached offline state: {} blocked pattern(s), shared-risk categories={}; reconciled firewall to {} effective pattern(s) ({} added, {} removed, {} add failures, {} remove failures, {} skipped local/reserved, {} skipped whitelisted, {} collapsed overlaps)",
-            offline_state.known_blocked_ips.len(),
-            offline_state.shared_risk_snapshot.categories.len(),
-            desired_patterns.len(),
-            summary.added,
-            summary.removed,
-            summary.add_failed,
-            summary.remove_failed,
-            skipped_local,
-            skipped_whitelist,
-            collapsed_overlaps
-        );
-    }
-
-    // Initial fetch: load all existing block-list IPs before starting the watcher
-    // so detections are classified "listed" from the very first event.
-    // Also re-applies firewall rules so blocks survive agent/host restarts.
+    // Populate known_blocked_ips from server decisions (data only, fast).
     match init_client.fetch_decisions_since(0).await {
         Ok(decisions) => {
             let whitelist_snapshot = whitelisted_ips.read().await.clone();
@@ -349,23 +345,9 @@ async fn run() -> Result<()> {
                     set.insert(d.ip.clone(), d.source.clone());
                 }
             }
-            let (desired_patterns, skipped_local, skipped_whitelist, collapsed_overlaps) = {
-                let known = known_blocked_ips.read().await;
-                desired_firewall_patterns(&known, &whitelist_snapshot)
-            };
-            let summary =
-                reconcile_block_patterns(&desired_patterns, &enforced_blocked_ips, &backend).await;
             tracing::info!(
-                "Loaded {} known blocked pattern(s) from server; reconciled firewall to {} effective pattern(s) ({} added, {} removed, {} add failures, {} remove failures, {} skipped local/reserved, {} skipped whitelisted, {} collapsed overlaps)",
-                decisions.len(),
-                desired_patterns.len(),
-                summary.added,
-                summary.removed,
-                summary.add_failed,
-                summary.remove_failed,
-                skipped_local,
-                skipped_whitelist,
-                collapsed_overlaps
+                "Loaded {} known blocked pattern(s) from server",
+                decisions.len()
             );
             sync::persist_offline_state(
                 &known_blocked_ips,
@@ -388,6 +370,49 @@ async fn run() -> Result<()> {
             .await;
         }
         Err(e) => tracing::warn!("Failed to load initial shared-risk profile: {}", e),
+    }
+
+    // Reconcile nftables in background — don't block main loop startup.
+    {
+        let bg_known_ips = Arc::clone(&known_blocked_ips);
+        let bg_enforced_ips = Arc::clone(&enforced_blocked_ips);
+        let bg_enforced_wl = Arc::clone(&enforced_whitelisted_ips);
+        let bg_whitelisted = Arc::clone(&whitelisted_ips);
+        let bg_backend = backend;
+        tokio::spawn(async move {
+            let whitelist_snapshot = bg_whitelisted.read().await.clone();
+
+            // Reconcile allowlist
+            let desired_wl = desired_whitelist_patterns(&whitelist_snapshot);
+            let wl_summary =
+                reconcile_whitelist_ips(&desired_wl, &bg_enforced_wl, &bg_backend).await;
+            if wl_summary.added > 0 || wl_summary.removed > 0 {
+                tracing::info!(
+                    "Allowlist reconciled: {} added, {} removed",
+                    wl_summary.added,
+                    wl_summary.removed
+                );
+            }
+
+            // Reconcile blocklist
+            let (desired_patterns, skipped_local, skipped_whitelist, collapsed_overlaps) = {
+                let known = bg_known_ips.read().await;
+                desired_firewall_patterns(&known, &whitelist_snapshot)
+            };
+            let summary =
+                reconcile_block_patterns(&desired_patterns, &bg_enforced_ips, &bg_backend).await;
+            tracing::info!(
+                "Firewall reconciliation complete: {} effective pattern(s) ({} added, {} removed, {} add failures, {} remove failures, {} skipped local/reserved, {} skipped whitelisted, {} collapsed overlaps)",
+                desired_patterns.len(),
+                summary.added,
+                summary.removed,
+                summary.add_failed,
+                summary.remove_failed,
+                skipped_local,
+                skipped_whitelist,
+                collapsed_overlaps
+            );
+        });
     }
 
     let (tx, mut rx) = mpsc::channel::<SecurityEvent>(1000);
@@ -490,26 +515,6 @@ async fn run() -> Result<()> {
                 Ok(_) => {}
                 Err(e) => tracing::warn!("Outbox flush failed: {}", e),
             }
-        }
-    });
-
-    let heartbeat_client = ApiClient::new(
-        config_arc.server_url.clone(),
-        config_arc.jwt_token.clone(),
-        config_arc.ca_cert_path.clone(),
-    )?;
-    let butterfly_enabled = config_arc.butterfly_shield.as_ref().map(|c| c.enabled);
-    let heartbeat_handle = tokio::spawn(async move {
-        let mut ticker = interval(Duration::from_secs(30));
-        ticker.tick().await;
-
-        loop {
-            match heartbeat_client.send_heartbeat(butterfly_enabled).await {
-                Ok(_) => tracing::debug!("Heartbeat sent"),
-                Err(e) => tracing::warn!("Failed to send heartbeat: {}", e),
-            }
-
-            ticker.tick().await;
         }
     });
 

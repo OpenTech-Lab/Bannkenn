@@ -3,8 +3,13 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::RwLock;
+
+/// Maximum number of elements per `add element` line in batch nft scripts.
+/// Keeps individual nft script lines at a manageable size (~100 KB).
+const NFT_BATCH_CHUNK_SIZE: usize = 5000;
 
 const NFT_FAMILY: &str = "inet";
 const NFT_TABLE: &str = "bannkenn";
@@ -290,6 +295,39 @@ pub async fn reconcile_block_patterns(
 ) -> FirewallReconcileSummary {
     let desired = desired_patterns.iter().cloned().collect::<HashSet<_>>();
     let current = enforced_blocked_ips.read().await.clone();
+
+    let added_count = desired.difference(&current).count() as u32;
+    let removed_count = current.difference(&desired).count() as u32;
+
+    // Fast path: nftables atomic set replacement via `nft -f`.
+    // Flushes and re-populates the entire set in one kernel transaction.
+    if *backend == FirewallBackend::Nftables && (added_count > 0 || removed_count > 0) {
+        match atomic_replace_set_nft(NFT_BLOCKLIST_SET, desired_patterns).await {
+            Ok(()) => {
+                *enforced_blocked_ips.write().await = desired;
+                tracing::info!(
+                    "firewall: atomically loaded {} blocklist element(s) ({} added, {} removed)",
+                    desired_patterns.len(),
+                    added_count,
+                    removed_count
+                );
+                return FirewallReconcileSummary {
+                    added: added_count,
+                    removed: removed_count,
+                    add_failed: 0,
+                    remove_failed: 0,
+                };
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "nftables atomic blocklist replace failed ({}), falling back to individual operations",
+                    e
+                );
+            }
+        }
+    }
+
+    // Fallback: individual add/remove (used for non-nftables backends or if batch fails)
     let mut summary = FirewallReconcileSummary::default();
 
     let mut removals = current
@@ -347,6 +385,38 @@ pub async fn reconcile_whitelist_ips(
 ) -> FirewallReconcileSummary {
     let desired_ips = desired_patterns.iter().cloned().collect::<HashSet<_>>();
     let current = enforced_whitelisted_ips.read().await.clone();
+
+    let added_count = desired_ips.difference(&current).count() as u32;
+    let removed_count = current.difference(&desired_ips).count() as u32;
+
+    // Fast path: nftables atomic set replacement
+    if *backend == FirewallBackend::Nftables && (added_count > 0 || removed_count > 0) {
+        match atomic_replace_set_nft(NFT_ALLOWLIST_SET, desired_patterns).await {
+            Ok(()) => {
+                *enforced_whitelisted_ips.write().await = desired_ips;
+                tracing::info!(
+                    "firewall: atomically loaded {} allowlist element(s) ({} added, {} removed)",
+                    desired_patterns.len(),
+                    added_count,
+                    removed_count
+                );
+                return FirewallReconcileSummary {
+                    added: added_count,
+                    removed: removed_count,
+                    add_failed: 0,
+                    remove_failed: 0,
+                };
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "nftables atomic allowlist replace failed ({}), falling back to individual operations",
+                    e
+                );
+            }
+        }
+    }
+
+    // Fallback: individual add/remove
     let mut summary = FirewallReconcileSummary::default();
 
     let mut removals = current
@@ -665,6 +735,48 @@ async fn cleanup_legacy_nftables() -> Result<()> {
         NFT_BLOCKLIST_SET,
     ])
     .await?;
+
+    Ok(())
+}
+
+/// Atomically replace all elements in an nftables set using `nft -f -`.
+/// Flushes the set and re-populates it in a single atomic kernel transaction,
+/// so there is no window where the set is empty.
+async fn atomic_replace_set_nft(set_name: &str, elements: &[String]) -> Result<()> {
+    let mut script = format!("flush set {} {} {}\n", NFT_FAMILY, NFT_TABLE, set_name);
+
+    for chunk in elements.chunks(NFT_BATCH_CHUNK_SIZE) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let joined = chunk.join(", ");
+        script.push_str(&format!(
+            "add element {} {} {} {{ {} }}\n",
+            NFT_FAMILY, NFT_TABLE, set_name, joined
+        ));
+    }
+
+    let mut child = Command::new("nft")
+        .args(["-f", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(script.as_bytes()).await?;
+    }
+
+    let output = child.wait_with_output().await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "nftables atomic set replace for {} failed: {}",
+            set_name,
+            stderr.trim()
+        ));
+    }
 
     Ok(())
 }
