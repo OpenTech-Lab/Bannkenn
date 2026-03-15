@@ -206,6 +206,16 @@
 - Provide a tracked `.env.example` with placeholders and keep the real `.env` local/ignored so operators can fill in their own values before running the scripts.
 - When a script depends on operator-specific values, document the `.env` step in the primary setup instructions instead of burying it in flags alone.
 
+### README quick starts should stay `.env`-first and avoid flag-heavy happy paths
+- When the normal workflow is "fill in `.env`, then run a script", make that the primary README path instead of leading with long one-off flag examples.
+- Keep advanced flags like `--tls-san` in optional troubleshooting or advanced sections, not in the default setup flow.
+- For this repo, prefer documenting `scripts/install.sh` and `scripts/update-server.sh` as the main operator entrypoints.
+
+### Top-level `How to use` sections should stay short
+- If the user asks for a quick usage section, keep it as a compact operator checklist rather than repeating the full README.
+- For this repo, the top-level `How to use` section should stay under 100 lines and focus on `.env`, `scripts/install.sh`, and `scripts/update-server.sh`.
+- If one setup mode is preferred, say that directly in the quick-start instead of making users infer it.
+
 ### Before starting the next phase, do the maintainability pass while the context is still fresh
 - If a large phase adds oversized files or growing inline tests, refactor them before starting the next phase instead of treating cleanup as optional follow-up.
 - Keep server tests in `server/tests/` with shared fixtures/modules rather than expanding `#[cfg(test)]` blocks inside production files.
