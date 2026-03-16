@@ -153,6 +153,10 @@
 - If a setup flow locks `stdin` with `stdin.lock()` for earlier prompts and later calls another helper that reads from `stdin` directly, the second prompt can appear and then hang waiting behind the still-live lock.
 - Before any follow-up registration/auth/TLS confirmation step that reads from stdin independently, explicitly drop the earlier locked reader or keep all prompts on the same reader abstraction.
 
+### First-run security features should be configurable in `init`, not hidden behind manual file edits
+- If an operator is expected to enable a feature like containment on a fresh host, `bannkenn-agent init` should offer that setup while the user is already answering prompts.
+- For update flows, keep automation-safe defaults by making interactive reconfiguration explicit (for example `update --configure-containment`) instead of silently changing policy during every upgrade.
+
 ### Interval firewall sets must reconcile overlapping CIDRs and hosts as one effective block set
 - If nftables uses an interval set, replaying raw decisions one-by-one is not order-independent: a host inside an existing CIDR, or a broader CIDR added after a host, will fail with `interval overlaps with an existing one`.
 - Normalize and reconcile the full effective block pattern set first, remove superseded narrow entries before adding broader ones, and make watcher/listed checks understand CIDR coverage instead of exact-string matches only.

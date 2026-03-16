@@ -320,7 +320,7 @@ fn refresh_service_unit_after_update(target_path: &Path) -> Result<bool> {
         .with_context(|| format!("Failed to refresh {}", SERVICE_UNIT_PATH))
 }
 
-async fn restart_service_if_active() -> Result<bool> {
+pub(crate) async fn restart_service_if_active() -> Result<bool> {
     let active = match service_is_active().await {
         Ok(active) => active,
         Err(_) => return Ok(false),

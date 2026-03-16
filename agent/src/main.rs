@@ -29,7 +29,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -59,6 +59,7 @@ use crate::updater::LinuxEbpfAssetStatus;
 use crate::watcher::{watch, BlockOutcome, SecurityEvent};
 
 const OPERATOR_ACTION_POLL_INTERVAL_SECS: u64 = 10;
+const CONTAINMENT_CONFIG_PATH_DISPLAY: &str = "~/.config/bannkenn/agent.toml";
 
 #[derive(Parser)]
 #[command(name = "bannkenn-agent")]
@@ -87,6 +88,9 @@ enum Commands {
     Update {
         /// Optional version such as 1.3.18 or v1.3.18; defaults to latest release
         version: Option<String>,
+        /// Prompt for containment paths after the update completes
+        #[arg(long)]
+        configure_containment: bool,
     },
 }
 
@@ -175,8 +179,69 @@ async fn main() -> Result<()> {
         Some(Commands::Connect) => connect().await?,
         Some(Commands::ConnectTest) => connect_test().await?,
         Some(Commands::CleanupFirewall) => cleanup_firewall_command().await?,
-        Some(Commands::Update { version }) => updater::update(version.as_deref()).await?,
+        Some(Commands::Update {
+            version,
+            configure_containment,
+        }) => update_command(version.as_deref(), configure_containment).await?,
         Some(Commands::Run) | None => run().await?,
+    }
+
+    Ok(())
+}
+
+async fn update_command(version: Option<&str>, configure_containment: bool) -> Result<()> {
+    updater::update(version).await?;
+
+    if configure_containment {
+        configure_containment_after_update().await?;
+    }
+
+    Ok(())
+}
+
+async fn configure_containment_after_update() -> Result<()> {
+    if !cfg!(target_os = "linux") {
+        println!("Containment configuration prompts are only available on Linux.");
+        return Ok(());
+    }
+
+    if !stdin_and_stdout_are_terminals() {
+        return Err(anyhow::anyhow!(
+            "--configure-containment requires an interactive terminal"
+        ));
+    }
+
+    let mut config = AgentConfig::load()?;
+    if config.uuid.is_empty() {
+        println!("No existing agent configuration found. Run 'sudo bannkenn-agent init' first.");
+        return Ok(());
+    }
+
+    let stdin = io::stdin();
+    let mut reader = stdin.lock();
+    let containment = config
+        .containment
+        .get_or_insert_with(default_runtime_containment_config);
+    let changed = prompt_update_containment_setup(&mut reader, containment)?;
+    drop(reader);
+
+    if !changed {
+        println!("Containment configuration unchanged.");
+        return Ok(());
+    }
+
+    config.save()?;
+    println!(
+        "Saved containment settings to {}.",
+        CONTAINMENT_CONFIG_PATH_DISPLAY
+    );
+
+    if updater::restart_service_if_active().await? {
+        println!("Restarted systemd service: bannkenn-agent");
+    } else {
+        println!(
+            "Systemd service not active; restart bannkenn-agent when you are ready to apply the new containment settings."
+        );
     }
 
     Ok(())
@@ -1098,6 +1163,7 @@ async fn shutdown_signal() -> &'static str {
 async fn init() -> Result<()> {
     println!("\n=== BannKenn Agent — Local Setup ===\n");
 
+    let interactive_terminal = stdin_and_stdout_are_terminals();
     let stdin = io::stdin();
     let mut reader = stdin.lock();
 
@@ -1156,6 +1222,11 @@ async fn init() -> Result<()> {
     }
     println!("Auto-selected log file: {}", log_path);
 
+    let mut containment = default_runtime_containment_config();
+    if cfg!(target_os = "linux") && interactive_terminal {
+        let _ = prompt_init_containment_setup(&mut reader, &mut containment)?;
+    }
+
     // Threshold
     print!("Failed login threshold [5]: ");
     io::stdout().flush()?;
@@ -1189,10 +1260,20 @@ async fn init() -> Result<()> {
         event_risk: None,
         campaign: Some(default_runtime_campaign_config()),
         mmdb_dir: None,
-        containment: Some(default_runtime_containment_config()),
+        containment: Some(containment),
     };
 
     config.save()?;
+    if let Some(containment) = config
+        .containment
+        .as_ref()
+        .filter(|containment| containment.enabled)
+    {
+        println!(
+            "Containment enabled in dry-run mode for {} watch path(s).",
+            containment.watch_paths.len()
+        );
+    }
 
     match updater::ensure_linux_ebpf_asset_for_current_release().await {
         Ok(LinuxEbpfAssetStatus::Installed(path)) => {
@@ -1715,6 +1796,221 @@ fn prompt_yes_no(prompt: &str) -> Result<bool> {
     Ok(matches!(answer, "y" | "Y" | "yes" | "YES" | "Yes"))
 }
 
+fn stdin_and_stdout_are_terminals() -> bool {
+    io::stdin().is_terminal() && io::stdout().is_terminal()
+}
+
+fn prompt_line(reader: &mut impl BufRead, prompt: &str) -> Result<String> {
+    print!("{}", prompt);
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    reader.read_line(&mut input)?;
+    Ok(input.trim().to_string())
+}
+
+fn prompt_yes_no_with_reader(
+    reader: &mut impl BufRead,
+    prompt: &str,
+    default: bool,
+) -> Result<bool> {
+    loop {
+        let answer = prompt_line(reader, prompt)?;
+        if answer.is_empty() {
+            return Ok(default);
+        }
+
+        match answer.as_str() {
+            "y" | "Y" | "yes" | "YES" | "Yes" => return Ok(true),
+            "n" | "N" | "no" | "NO" | "No" => return Ok(false),
+            _ => println!("Please answer y or n."),
+        }
+    }
+}
+
+fn prompt_init_containment_setup(
+    reader: &mut impl BufRead,
+    containment: &mut ContainmentConfig,
+) -> Result<bool> {
+    println!("\nContainment setup (Linux only)");
+    println!(
+        "If enabled now, BannKenn starts in dry-run mode so you can validate the journal before enforcing actions."
+    );
+
+    if !prompt_yes_no_with_reader(
+        reader,
+        "Enable containment behavior monitoring now? [Y/n]: ",
+        true,
+    )? {
+        return Ok(false);
+    }
+
+    let watch_paths = prompt_containment_paths(
+        reader,
+        "Watch paths (comma-separated absolute paths)",
+        &[],
+        true,
+        None,
+    )?;
+    let protected_paths = prompt_containment_paths(
+        reader,
+        "Protected paths (comma-separated absolute paths)",
+        &[],
+        false,
+        Some(&watch_paths),
+    )?;
+    let protected_paths = if protected_paths.is_empty() {
+        watch_paths.clone()
+    } else {
+        protected_paths
+    };
+
+    apply_containment_setup(containment, watch_paths, protected_paths);
+    Ok(true)
+}
+
+fn prompt_update_containment_setup(
+    reader: &mut impl BufRead,
+    containment: &mut ContainmentConfig,
+) -> Result<bool> {
+    println!("\nContainment setup (Linux only)");
+    println!("Press Enter to keep the current value shown in brackets.");
+    println!(
+        "BannKenn keeps containment in dry-run mode after this setup so you can validate it before enforcing actions."
+    );
+    println!(
+        "Current watch paths: {}",
+        format_containment_paths(&containment.watch_paths)
+    );
+    println!(
+        "Current protected paths: {}",
+        format_containment_paths(&containment.protected_paths)
+    );
+
+    let original = containment.clone();
+    let watch_paths = prompt_containment_paths(
+        reader,
+        "Watch paths (comma-separated absolute paths)",
+        &containment.watch_paths,
+        true,
+        None,
+    )?;
+    let protected_paths = prompt_containment_paths(
+        reader,
+        "Protected paths (comma-separated absolute paths)",
+        &containment.protected_paths,
+        false,
+        Some(&watch_paths),
+    )?;
+    let protected_paths = if protected_paths.is_empty() {
+        watch_paths.clone()
+    } else {
+        protected_paths
+    };
+
+    apply_containment_setup(containment, watch_paths, protected_paths);
+    Ok(*containment != original)
+}
+
+fn prompt_containment_paths(
+    reader: &mut impl BufRead,
+    label: &str,
+    current: &[String],
+    required: bool,
+    default_paths: Option<&[String]>,
+) -> Result<Vec<String>> {
+    loop {
+        let default_value = if current.is_empty() {
+            default_paths
+        } else {
+            Some(current)
+        };
+        let prompt = if let Some(paths) = default_value {
+            format!("{} [current: {}]: ", label, format_containment_paths(paths))
+        } else if required {
+            format!("{} [required]: ", label)
+        } else {
+            format!("{} [blank = same as watch paths]: ", label)
+        };
+
+        let input = prompt_line(reader, &prompt)?;
+        if input.is_empty() {
+            if let Some(paths) = default_value {
+                return Ok(paths.to_vec());
+            }
+            if required {
+                println!("Please enter at least one absolute path.");
+                continue;
+            }
+            return Ok(Vec::new());
+        }
+
+        let paths = parse_containment_path_list(&input);
+        if paths.is_empty() {
+            if required {
+                println!("Please enter at least one absolute path.");
+                continue;
+            }
+            return Ok(Vec::new());
+        }
+
+        let invalid_paths = invalid_containment_paths(&paths);
+        if !invalid_paths.is_empty() {
+            println!(
+                "Containment paths must be absolute: {}",
+                invalid_paths.join(", ")
+            );
+            continue;
+        }
+
+        return Ok(paths);
+    }
+}
+
+fn parse_containment_path_list(input: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    input
+        .split(',')
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .filter_map(|path| {
+            let path = path.to_string();
+            if seen.insert(path.clone()) {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn invalid_containment_paths(paths: &[String]) -> Vec<String> {
+    paths
+        .iter()
+        .filter(|path| !Path::new(path.as_str()).is_absolute())
+        .cloned()
+        .collect()
+}
+
+fn apply_containment_setup(
+    containment: &mut ContainmentConfig,
+    watch_paths: Vec<String>,
+    protected_paths: Vec<String>,
+) {
+    containment.enabled = true;
+    containment.dry_run = true;
+    containment.watch_paths = watch_paths;
+    containment.protected_paths = protected_paths;
+}
+
+fn format_containment_paths(paths: &[String]) -> String {
+    if paths.is_empty() {
+        "none".to_string()
+    } else {
+        paths.join(", ")
+    }
+}
+
 fn redact_fingerprint(fp: &str) -> String {
     if fp.len() > 16 {
         format!("{}...{}", &fp[..11], &fp[fp.len() - 5..])
@@ -2059,7 +2355,9 @@ async fn register_and_persist_agent(config: &mut AgentConfig) -> Result<String> 
 #[cfg(test)]
 mod tests {
     use super::{
-        is_cloudflare_response, is_https_plain_http_mismatch_error, Cli, Commands, HttpProbeResult,
+        apply_containment_setup, invalid_containment_paths, is_cloudflare_response,
+        is_https_plain_http_mismatch_error, parse_containment_path_list, Cli, Commands,
+        ContainmentConfig, HttpProbeResult,
     };
     use clap::Parser;
     use reqwest::StatusCode;
@@ -2085,6 +2383,18 @@ mod tests {
     }
 
     #[test]
+    fn update_command_parses_configure_containment_flag() {
+        let cli = Cli::parse_from(["bannkenn-agent", "update", "--configure-containment"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Update {
+                configure_containment: true,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn cloudflare_probe_is_detected() {
         let probe = HttpProbeResult {
             status: StatusCode::FORBIDDEN,
@@ -2095,5 +2405,43 @@ mod tests {
         };
 
         assert!(is_cloudflare_response(&probe));
+    }
+
+    #[test]
+    fn containment_path_parser_trims_and_deduplicates() {
+        assert_eq!(
+            parse_containment_path_list(" /srv/data , /var/www , /srv/data "),
+            vec!["/srv/data".to_string(), "/var/www".to_string()]
+        );
+    }
+
+    #[test]
+    fn relative_containment_paths_are_rejected() {
+        assert_eq!(
+            invalid_containment_paths(&[
+                "/srv/data".to_string(),
+                "relative/path".to_string(),
+                "../tmp".to_string()
+            ]),
+            vec!["relative/path".to_string(), "../tmp".to_string()]
+        );
+    }
+
+    #[test]
+    fn containment_setup_enables_dry_run_with_prompted_paths() {
+        let mut containment = ContainmentConfig::default();
+        apply_containment_setup(
+            &mut containment,
+            vec!["/srv/data".to_string()],
+            vec!["/srv/data".to_string(), "/srv/backups".to_string()],
+        );
+
+        assert!(containment.enabled);
+        assert!(containment.dry_run);
+        assert_eq!(containment.watch_paths, vec!["/srv/data".to_string()]);
+        assert_eq!(
+            containment.protected_paths,
+            vec!["/srv/data".to_string(), "/srv/backups".to_string()]
+        );
     }
 }

@@ -52,8 +52,9 @@ On Linux, `bannkenn-agent update` installs both:
 - the requested `bannkenn-agent` release binary
 - the matching `bannkenn-containment-*.bpf.o` release asset into the default containment object path
 
-`bannkenn-agent init` also checks for the Linux containment object and installs the matching release asset automatically if it is missing.
+`bannkenn-agent init` also checks for the Linux containment object, installs the matching release asset automatically if it is missing, and on Linux interactively offers to enable containment in dry-run mode with operator-supplied paths.
 If the binary is already up to date but the containment object is missing, `sudo bannkenn-agent update` repairs the missing `.bpf.o` and restarts the service when it had to install the asset.
+If you want to revise the containment paths later, run `sudo bannkenn-agent update --configure-containment`.
 
 If you are doing a manual release install instead of using the updater, install both files together:
 
@@ -127,7 +128,7 @@ When enforcement is active and `dry_run = false`, success/failure shows up in ag
 
 ## Live-host validation workflow
 
-1. Enable containment in `~/.config/bannkenn/agent.toml`.
+1. Enable containment in `~/.config/bannkenn/agent.toml`, or let `sudo bannkenn-agent init` / `sudo bannkenn-agent update --configure-containment` write the paths for you.
 
 At minimum, set:
 

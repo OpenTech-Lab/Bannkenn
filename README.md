@@ -71,7 +71,7 @@ sudo bannkenn-agent init
 sudo systemctl enable --now bannkenn-agent
 ```
 
-On Linux, `bannkenn-agent init` now checks that the containment `.bpf.o` exists and installs the matching release asset automatically when it is missing.
+On Linux, `bannkenn-agent init` now checks that the containment `.bpf.o` exists, installs the matching release asset automatically when it is missing, and interactively offers to enable containment in dry-run mode with your chosen `watch_paths`/`protected_paths`.
 
 When `bannkenn-agent init` asks for the server URL, use the API URL:
 
@@ -93,10 +93,13 @@ sudo bannkenn-agent update
 
 On Linux, this now refreshes both the released agent binary and the matching containment BPF object. If the binary is already current but the containment object is missing, `sudo bannkenn-agent update` will repair the missing `.bpf.o` and restart the service when needed.
 
+If you want to configure or revise containment paths during an upgrade, run:
+
+```bash
+sudo bannkenn-agent update --configure-containment
+```
+
 If you want to manage certificates yourself, use `scripts/generate-ip-cert.sh` before the native-TLS install. Otherwise, `scripts/install.sh dashboard-native-tls` can generate the cert files from `.env`.
-
-For rollback steps, Dockerized agent packaging, and live-host containment validation, see `docs/04_Operations_and_Containment_Runbook.md`.
-
 
 ## License
 MIT
