@@ -535,6 +535,7 @@ export function AgentDetailPage() {
                       <TableHead>Reason</TableHead>
                       <TableHead>Source</TableHead>
                       <TableHead>Country</TableHead>
+                      <TableHead>ASN / Org</TableHead>
                       <TableHead>Timestamp</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -561,6 +562,9 @@ export function AgentDetailPage() {
                         <TableCell className="text-xs text-muted-foreground">{e.source}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           {e.country ?? '—'}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground max-w-[160px] truncate">
+                          {e.asn_org ?? '—'}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                           <p>{formatTimestamp(e.created_at)}</p>
@@ -589,6 +593,7 @@ export function AgentDetailPage() {
                       <TableHead>Reason</TableHead>
                       <TableHead>Source</TableHead>
                       <TableHead>Country</TableHead>
+                      <TableHead>ASN / Org</TableHead>
                       <TableHead>Expires</TableHead>
                       <TableHead>Timestamp</TableHead>
                     </TableRow>
@@ -616,6 +621,9 @@ export function AgentDetailPage() {
                         <TableCell className="text-xs text-muted-foreground">{d.source}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           {d.country ?? '—'}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground max-w-[160px] truncate">
+                          {d.asn_org ?? '—'}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                           {d.expires_at ? formatRelativeTime(d.expires_at) : '—'}

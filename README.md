@@ -77,11 +77,17 @@ When `bannkenn-agent init` asks for the server URL, use the API URL:
 
 - HTTP: `http://SERVER_IP:3022`
 - Native TLS: `https://SERVER_IP:3022`
+- **Same machine as server (native-TLS):** `https://localhost:3022`
+  - CA cert path: `/etc/bannkenn/tls/bannkenn.crt`
+  - The TLS certificate automatically includes `localhost` and `127.0.0.1` as SANs, so `localhost` works without any extra steps.
 
 Useful checks:
 
 ```bash
+# HTTP mode
 curl http://localhost:3022/api/v1/health
+# Native-TLS mode
+curl -k https://localhost:3022/api/v1/health
 sudo systemctl status bannkenn-agent --no-pager
 ```
 

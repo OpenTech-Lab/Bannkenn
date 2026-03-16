@@ -1175,6 +1175,9 @@ async fn init() -> Result<()> {
     let mut reader = stdin.lock();
 
     // Server URL
+    println!("  HTTP mode:        http://SERVER_IP:3022");
+    println!("  Native-TLS mode:  https://SERVER_IP:3022");
+    println!("  Same machine:     https://localhost:3022  (TLS cert includes localhost)");
     print!("BannKenn API server URL [http://localhost:3022]: ");
     io::stdout().flush()?;
     let mut server_url = String::new();
@@ -1187,6 +1190,8 @@ async fn init() -> Result<()> {
     };
 
     let ca_cert_path = if server_url.starts_with("https://") {
+        println!("  Self-signed cert: /etc/bannkenn/tls/bannkenn.crt");
+        println!("  Publicly trusted: leave blank");
         print!("Custom CA/cert PEM path [blank = system trust]: ");
         io::stdout().flush()?;
         let mut input = String::new();
