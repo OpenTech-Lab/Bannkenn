@@ -101,5 +101,10 @@ sudo bannkenn-agent update --configure-containment
 
 If you want to manage certificates yourself, use `scripts/generate-ip-cert.sh` before the native-TLS install. Otherwise, `scripts/install.sh dashboard-native-tls` can generate the cert files from `.env`.
 
+### Path sample: 
+<pre>
+/etc/passwd,/etc/shadow,/etc/sudoers,/etc/sudoers.d/,/etc/pam.d/,/root/.ssh/authorized_keys,/bin/,/sbin/,/usr/bin/,/usr/sbin/,/usr/local/bin/,/lib/modules/,/etc/systemd/system/,/usr/lib/systemd/system/,/etc/init.d/,/etc/crontab/,/etc/cron.d/,/etc/rc.local,/etc/ld.so.preload,/etc/profile.d/,/etc/bashrc,/etc/hosts,/tmp/,/var/tmp/,/dev/shm/
+</pre>
+
 ## License
 MIT

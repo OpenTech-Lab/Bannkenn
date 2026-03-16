@@ -147,7 +147,7 @@ export default function IpMonitorOverview() {
 
       {/* Per-agent IP monitor summary */}
       {agentTelemetrySummaries.length > 0 && (
-        <section className="rounded-xl border border-border bg-card p-5 space-y-4">
+        <section className="space-y-4">
           <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em]">
             Per-Agent IP Monitor Activity
           </h2>
@@ -244,7 +244,7 @@ export default function IpMonitorOverview() {
 
       {/* Recent block decisions */}
       {decisions.length > 0 && (
-        <section className="rounded-xl border border-border bg-card p-5 space-y-4">
+        <section className="space-y-4">
           <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em]">
             Recent Block Decisions
           </h2>
@@ -292,7 +292,7 @@ export default function IpMonitorOverview() {
 
       {/* Community feeds summary */}
       {feeds.length > 0 && (
-        <section className="rounded-xl border border-border bg-card p-5 space-y-4">
+        <section className="space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em]">
               Active Community Feeds

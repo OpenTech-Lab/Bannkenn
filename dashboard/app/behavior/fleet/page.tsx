@@ -173,7 +173,6 @@ export default function FleetPage() {
         <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em] pb-3">
           Containment Status Panel
         </h2>
-        <div className="border-t border-border mb-4" />
         {summaries.length === 0 ? (
           <p className="text-sm text-muted-foreground">No agents are registered yet.</p>
         ) : (

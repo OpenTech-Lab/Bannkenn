@@ -222,7 +222,7 @@ function IpLookupPageContent() {
       ) : result ? (
         <>
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
-            <div className="rounded-xl border border-border bg-card p-5 space-y-4">
+            <div className="space-y-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">
@@ -456,7 +456,7 @@ function LookupPageFallback() {
 
 function SectionCard({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="rounded-xl border border-border bg-card p-5 space-y-4">
+    <section className="space-y-4">
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em]">
           {title}

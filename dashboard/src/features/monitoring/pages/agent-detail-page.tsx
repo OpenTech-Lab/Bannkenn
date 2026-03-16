@@ -4,12 +4,20 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { startTransition, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import {
   fetchAgentDetailSnapshot,
   requestContainmentAction,
 } from '@/src/features/monitoring/api';
-import { IncidentList } from '@/src/features/monitoring/components/incident-list';
-import { MetricCard, SectionPanel } from '@/src/features/monitoring/components/panel';
 import {
   AgentStatusBadge,
   ContainmentStateBadge,
@@ -32,43 +40,30 @@ export function AgentDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [pendingActionKey, setPendingActionKey] = useState<string | null>(null);
+  const [ipTab, setIpTab] = useState<'telemetry' | 'decisions'>('telemetry');
 
   useEffect(() => {
-    if (!id) {
-      return;
-    }
-
+    if (!id) return;
     let cancelled = false;
-
     const refresh = async () => {
       try {
         const next = await fetchAgentDetailSnapshot(id);
-        if (cancelled) {
-          return;
-        }
+        if (cancelled) return;
         startTransition(() => {
           setSnapshot(next);
           setError(null);
           setLoading(false);
         });
       } catch (cause) {
-        if (cancelled) {
-          return;
-        }
-        const message =
-          cause instanceof Error ? cause.message : 'Failed to load the agent detail view';
+        if (cancelled) return;
         startTransition(() => {
-          setError(message);
+          setError(cause instanceof Error ? cause.message : 'Failed to load agent detail');
           setLoading(false);
         });
       }
     };
-
     void refresh();
-    const intervalId = window.setInterval(() => {
-      void refresh();
-    }, POLL_INTERVAL_MS);
-
+    const intervalId = window.setInterval(() => void refresh(), POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
@@ -77,18 +72,18 @@ export function AgentDetailPage() {
 
   const currentContainment = snapshot?.containmentEvents[0];
   const pendingActions =
-    snapshot?.containmentActions.filter((action) => action.status === 'pending').length ?? 0;
+    snapshot?.containmentActions.filter((a) => a.status === 'pending').length ?? 0;
   const elevatedBehaviorCount =
-    snapshot?.behaviorEvents.filter((event) => event.level !== 'observed').length ?? 0;
+    snapshot?.behaviorEvents.filter((e) => e.level !== 'observed').length ?? 0;
+
+  const containmentHistory = useMemo(() => snapshot?.containmentEvents.slice(0, 12) ?? [], [snapshot]);
+  const actionHistory = useMemo(() => snapshot?.containmentActions.slice(0, 12) ?? [], [snapshot]);
+  const behaviorEvents = useMemo(() => snapshot?.behaviorEvents.slice(0, 30) ?? [], [snapshot]);
 
   async function handleAction(commandKind: 'trigger_fuse' | 'release_fuse') {
-    if (!snapshot) {
-      return;
-    }
-
+    if (!snapshot) return;
     const key = `${snapshot.agent.id}:${commandKind}`;
     setPendingActionKey(key);
-
     try {
       await requestContainmentAction(snapshot.agent.id, {
         command_kind: commandKind,
@@ -104,7 +99,6 @@ export function AgentDetailPage() {
           ? `FUSE queued for ${agentLabel(snapshot.agent)}`
           : `FUSE release queued for ${agentLabel(snapshot.agent)}`
       );
-
       const next = await fetchAgentDetailSnapshot(id ?? String(snapshot.agent.id));
       startTransition(() => {
         setSnapshot(next);
@@ -117,160 +111,184 @@ export function AgentDetailPage() {
     }
   }
 
-  const containmentHistory = useMemo(() => snapshot?.containmentEvents.slice(0, 12) ?? [], [snapshot]);
-  const actionHistory = useMemo(() => snapshot?.containmentActions.slice(0, 12) ?? [], [snapshot]);
-  const behaviorEvents = useMemo(() => snapshot?.behaviorEvents.slice(0, 30) ?? [], [snapshot]);
-
   if (loading && !snapshot) {
-    return <div className="px-6 py-10 text-sm text-slate-400">Loading agent detail…</div>;
+    return (
+      <div className="px-6 py-8">
+        <p className="text-sm text-muted-foreground">Loading agent detail...</p>
+      </div>
+    );
   }
 
   if (error && !snapshot) {
     return (
-      <div className="px-6 py-10 space-y-4">
-        <p className="text-sm text-red-300">{error}</p>
-        <Link href="/behavior/fleet" className="text-sm text-sky-300 transition-colors hover:text-sky-200">
+      <div className="px-6 py-8 space-y-4">
+        <div className="rounded-xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-300">
+          {error}
+        </div>
+        <Link href="/behavior/fleet" className="text-sm text-blue-400 hover:text-blue-300">
           Back to fleet
         </Link>
       </div>
     );
   }
 
-  if (!snapshot) {
-    return null;
-  }
+  if (!snapshot) return null;
 
   const state = currentContainment?.state ?? 'normal';
+  const triggerKey = `${snapshot.agent.id}:trigger_fuse`;
+  const releaseKey = `${snapshot.agent.id}:release_fuse`;
 
   return (
-    <div className="px-6 py-10 space-y-8">
-      <div className="flex flex-wrap items-start justify-between gap-6">
-        <div className="space-y-3">
-          <Link href="/behavior/fleet" className="text-sm text-sky-300 transition-colors hover:text-sky-200">
+    <div className="px-6 py-8 space-y-6 max-w-7xl">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <Link href="/behavior/fleet" className="text-sm text-blue-400 hover:text-blue-300">
             Back to fleet
           </Link>
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">
-              Agent detail
-            </p>
-            <h1 className="mt-2 text-4xl font-semibold tracking-tight text-white">
-              {agentLabel(snapshot.agent)}
-            </h1>
-            <p className="mt-2 text-sm text-slate-400">
-              Registered {formatTimestamp(snapshot.agent.created_at)} · last seen{' '}
-              {formatTimestamp(snapshot.agent.last_seen_at)}
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
+          <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground mt-4">
+            Agent Detail
+          </p>
+          <h1 className="text-2xl font-bold text-white mt-2">{agentLabel(snapshot.agent)}</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Registered {formatTimestamp(snapshot.agent.created_at)}
+            {snapshot.agent.last_seen_at && (
+              <> · last seen {formatRelativeTime(snapshot.agent.last_seen_at)}</>
+            )}
+          </p>
+          <div className="flex flex-wrap gap-2 mt-3">
             <AgentStatusBadge status={snapshot.agent.status} />
             <ContainmentStateBadge state={state} />
             <EbpfSensorBadge sensor={snapshot.agent.containment_sensor} />
           </div>
         </div>
-        <div className="space-y-2 rounded-2xl border border-white/10 bg-black/60 p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">
-            Manual containment
+        <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+          <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">
+            Manual Containment
           </p>
           <div className="flex flex-wrap gap-2">
-            <button
-              className="rounded-md bg-red-900/80 px-3 py-2 text-sm font-medium text-red-100 transition-colors hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={pendingActionKey === `${snapshot.agent.id}:trigger_fuse` || state === 'fuse'}
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={pendingActionKey === triggerKey || state === 'fuse'}
               onClick={() => void handleAction('trigger_fuse')}
             >
-              {pendingActionKey === `${snapshot.agent.id}:trigger_fuse` ? 'Queuing…' : 'Trigger FUSE'}
-            </button>
-            <button
-              className="rounded-md border border-white/10 bg-white/[0.02] px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/[0.07] disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={pendingActionKey === `${snapshot.agent.id}:release_fuse` || state !== 'fuse'}
+              {pendingActionKey === triggerKey ? 'Queuing...' : 'Trigger FUSE'}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pendingActionKey === releaseKey || state !== 'fuse'}
               onClick={() => void handleAction('release_fuse')}
             >
-              {pendingActionKey === `${snapshot.agent.id}:release_fuse` ? 'Queuing…' : 'Release FUSE'}
-            </button>
+              {pendingActionKey === releaseKey ? 'Queuing...' : 'Release FUSE'}
+            </Button>
           </div>
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-muted-foreground">
             {currentContainment
-              ? `Current root ${currentContainment.watched_root} · score ${currentContainment.score}`
+              ? `Root ${currentContainment.watched_root} · score ${currentContainment.score}`
               : 'No containment transitions recorded yet'}
           </p>
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard label="Behavior events" value={snapshot.behaviorEvents.length} />
-        <MetricCard
-          label="Elevated behavior"
-          value={elevatedBehaviorCount}
-          detail="Events above observed severity"
-          accent="amber"
-        />
-        <MetricCard
-          label="Containment changes"
-          value={snapshot.containmentEvents.length}
-          detail={currentContainment ? `Latest ${formatRelativeTime(currentContainment.created_at)}` : 'No history yet'}
-          accent="red"
-        />
-        <MetricCard
-          label="Queued actions"
-          value={pendingActions}
-          detail={`${snapshot.relatedIncidents.length} related incidents`}
-          accent="emerald"
-        />
-      </div>
-
-      {error ? (
-        <div className="rounded-2xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
+      {error && (
+        <div className="rounded-xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-300">
           {error}
         </div>
-      ) : null}
+      )}
 
-      <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
-        <SectionPanel
-          eyebrow="State"
-          title="Current containment state"
-          description={currentContainment?.reason ?? 'No containment state recorded yet.'}
-        >
-          <ContainmentStateTrack state={state} />
-          <dl className="mt-4 grid gap-3 text-sm text-slate-300 md:grid-cols-2">
-            <div className="rounded-2xl border border-white/10 bg-black/60 p-4">
-              <dt className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">
-                Watched root
-              </dt>
-              <dd className="mt-2">{currentContainment?.watched_root ?? 'Not available'}</dd>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-black/60 p-4">
-              <dt className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">
-                Last transition
-              </dt>
-              <dd className="mt-2">
-                {currentContainment ? formatTimestamp(currentContainment.created_at) : 'Never'}
-              </dd>
-            </div>
-          </dl>
-        </SectionPanel>
+      {/* Metric cards */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-xl border border-border bg-card px-4 py-4">
+          <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Behavior Events</p>
+          <p className="mt-3 text-3xl font-semibold tabular-nums text-white">
+            {snapshot.behaviorEvents.length}
+          </p>
+        </div>
+        <div className="rounded-xl border border-border bg-card px-4 py-4">
+          <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Elevated</p>
+          <p className="mt-3 text-3xl font-semibold tabular-nums text-amber-400">
+            {elevatedBehaviorCount}
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">Above observed severity</p>
+        </div>
+        <div className="rounded-xl border border-border bg-card px-4 py-4">
+          <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Containment Changes</p>
+          <p className="mt-3 text-3xl font-semibold tabular-nums text-orange-400">
+            {snapshot.containmentEvents.length}
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">
+            {currentContainment
+              ? `Latest ${formatRelativeTime(currentContainment.created_at)}`
+              : 'No history yet'}
+          </p>
+        </div>
+        <div className="rounded-xl border border-border bg-card px-4 py-4">
+          <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Incidents</p>
+          <p className="mt-3 text-3xl font-semibold tabular-nums text-red-400">
+            {snapshot.relatedIncidents.length}
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">
+            {pendingActions} pending action{pendingActions !== 1 ? 's' : ''}
+          </p>
+        </div>
+      </div>
 
-        <SectionPanel
-          eyebrow="Commands"
-          title="Operator action queue"
-          description="Dashboard-issued fuse requests and agent acknowledgements."
-        >
+      {/* Containment state + action queue */}
+      <div className="grid gap-6 lg:grid-cols-2">
+        <section className="space-y-0">
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em] pb-3">
+            Current Containment State
+          </h2>
+          
+          <div className="space-y-4">
+            <ContainmentStateTrack state={state} />
+            {currentContainment && (
+              <p className="text-sm text-muted-foreground">{currentContainment.reason}</p>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-xl border border-gray-800 bg-gray-900/40 px-3 py-3">
+                <p className="text-xs text-gray-500">Watched Root</p>
+                <p className="text-sm text-gray-300 mt-1 truncate">
+                  {currentContainment?.watched_root ?? 'Not available'}
+                </p>
+              </div>
+              <div className="rounded-xl border border-gray-800 bg-gray-900/40 px-3 py-3">
+                <p className="text-xs text-gray-500">Last Transition</p>
+                <p className="text-sm text-gray-300 mt-1">
+                  {currentContainment ? formatTimestamp(currentContainment.created_at) : 'Never'}
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="space-y-0">
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em] pb-3">
+            Operator Action Queue
+          </h2>
+          
           {actionHistory.length === 0 ? (
-            <p className="text-sm text-slate-400">No operator actions have been queued yet.</p>
+            <p className="text-sm text-muted-foreground">No operator actions have been queued yet.</p>
           ) : (
             <div className="space-y-3">
               {actionHistory.map((action) => (
                 <div
                   key={action.id}
-                  className="rounded-2xl border border-white/10 bg-black/60 p-4"
+                  className="rounded-xl border border-gray-800 bg-gray-900/40 p-4"
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="space-y-1">
-                      <p className="font-medium text-white">{action.command_kind.replace('_', ' ')}</p>
-                      <p className="text-sm text-slate-400">{action.reason}</p>
-                      <p className="text-xs text-slate-500">
+                      <p className="font-medium text-white text-sm">
+                        {action.command_kind.replace('_', ' ')}
+                      </p>
+                      <p className="text-sm text-muted-foreground">{action.reason}</p>
+                      <p className="text-xs text-gray-500">
                         {action.result_message ?? 'Awaiting agent acknowledgement'}
                       </p>
                     </div>
-                    <div className="text-right text-xs text-slate-500">
+                    <div className="text-right text-xs text-muted-foreground shrink-0">
                       <p>{action.status}</p>
                       <p>{formatTimestamp(action.executed_at ?? action.updated_at)}</p>
                     </div>
@@ -279,40 +297,40 @@ export function AgentDetailPage() {
               ))}
             </div>
           )}
-        </SectionPanel>
+        </section>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
-        <SectionPanel
-          eyebrow="History"
-          title="Containment history"
-          description="Recent containment transitions for this host."
-        >
+      {/* Containment history + behavior events */}
+      <div className="grid gap-6 lg:grid-cols-2">
+        <section className="space-y-0">
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em] pb-3">
+            Containment History
+          </h2>
           {containmentHistory.length === 0 ? (
-            <p className="text-sm text-slate-400">No containment events have been reported yet.</p>
+            <p className="text-sm text-muted-foreground">No containment events have been reported yet.</p>
           ) : (
             <div className="space-y-3">
               {containmentHistory.map((event) => (
                 <div
                   key={event.id}
-                  className="rounded-2xl border border-white/10 bg-black/60 p-4"
+                  className="rounded-xl border border-gray-800 bg-gray-900/40 p-4"
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="space-y-2">
-                      <div className="flex flex-wrap gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <ContainmentStateBadge state={event.state} />
-                        {event.previous_state ? (
-                          <span className="text-xs text-slate-500">
+                        {event.previous_state && (
+                          <span className="text-xs text-muted-foreground">
                             from {event.previous_state}
                           </span>
-                        ) : null}
+                        )}
                       </div>
-                      <p className="text-sm text-slate-400">{event.reason}</p>
-                      <p className="text-xs text-slate-500">
+                      <p className="text-sm text-muted-foreground">{event.reason}</p>
+                      <p className="text-xs text-gray-500">
                         Root {event.watched_root} · score {event.score}
                       </p>
                     </div>
-                    <div className="text-right text-xs text-slate-500">
+                    <div className="text-right text-xs text-muted-foreground shrink-0">
                       <p>{formatTimestamp(event.created_at)}</p>
                       <p>{formatRelativeTime(event.created_at)}</p>
                     </div>
@@ -321,35 +339,36 @@ export function AgentDetailPage() {
               ))}
             </div>
           )}
-        </SectionPanel>
+        </section>
 
-        <SectionPanel
-          eyebrow="Behavior"
-          title="Behavior events"
-          description="Recent eBPF/userland behavior events uploaded by this agent."
-        >
+        <section className="space-y-0">
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em] pb-3">
+            Behavior Events
+          </h2>
+          
           {behaviorEvents.length === 0 ? (
-            <p className="text-sm text-slate-400">No behavior events have been uploaded yet.</p>
+            <p className="text-sm text-muted-foreground">No behavior events have been uploaded yet.</p>
           ) : (
             <div className="space-y-3">
               {behaviorEvents.map((event) => (
                 <div
                   key={event.id}
-                  className="rounded-2xl border border-white/10 bg-black/60 p-4"
+                  className="rounded-xl border border-gray-800 bg-gray-900/40 p-4"
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="space-y-2">
-                      <p className="font-medium text-white">
+                      <p className="font-medium text-white text-sm">
                         {event.process_name ?? event.exe_path ?? 'unknown process'}
                       </p>
-                      <p className="text-sm text-slate-400">
+                      <p className="text-sm text-muted-foreground">
                         {event.reasons.join(', ') || event.level}
                       </p>
-                      <p className="text-xs text-slate-500">
-                        Root {event.watched_root} · score {event.score} · pid {event.pid ?? 'n/a'}
+                      <p className="text-xs text-gray-500">
+                        Root {event.watched_root} · score {event.score}
+                        {event.pid != null && ` · pid ${event.pid}`}
                       </p>
                     </div>
-                    <div className="text-right text-xs text-slate-500">
+                    <div className="text-right text-xs text-muted-foreground shrink-0">
                       <p>{formatTimestamp(event.created_at)}</p>
                       <p>{formatRelativeTime(event.created_at)}</p>
                     </div>
@@ -358,15 +377,251 @@ export function AgentDetailPage() {
               ))}
             </div>
           )}
-        </SectionPanel>
+        </section>
       </div>
 
-      <IncidentList
-        incidents={snapshot.relatedIncidents.slice(0, 8)}
-        title="Related incidents"
-        description="Recent incidents that include this host in the reconstructed impact set."
-        emptyMessage="No incidents currently reference this host."
-      />
+      {/* Related incidents */}
+      {snapshot.relatedIncidents.length > 0 && (
+        <section className="space-y-0">
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em] pb-3">
+            Related Incidents
+          </h2>
+          <div className="border-t border-border" />
+          <div className="rounded-b-xl border-x border-b border-border overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Title</TableHead>
+                  <TableHead>Severity</TableHead>
+                  <TableHead>State</TableHead>
+                  <TableHead className="text-right">Events</TableHead>
+                  <TableHead>Last Seen</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {snapshot.relatedIncidents.slice(0, 8).map((inc) => (
+                  <TableRow key={inc.id}>
+                    <TableCell className="font-medium max-w-xs">
+                      <Link
+                        href={`/behavior/incidents/${inc.id}`}
+                        className="text-blue-400 hover:text-blue-300 hover:underline"
+                      >
+                        {inc.title}
+                      </Link>
+                    </TableCell>
+                    <TableCell>
+                      <SeverityBadge severity={inc.severity} />
+                    </TableCell>
+                    <TableCell>
+                      {inc.latest_state && (
+                        <Badge
+                          className={
+                            inc.latest_state === 'fuse'
+                              ? 'bg-red-950/60 text-red-300 border border-red-700'
+                              : inc.latest_state === 'throttle'
+                              ? 'bg-orange-950/50 text-orange-300 border border-orange-700'
+                              : 'bg-gray-900/70 text-gray-200 border border-gray-700'
+                          }
+                        >
+                          {inc.latest_state}
+                        </Badge>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">{inc.event_count}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                      {formatRelativeTime(inc.last_seen_at)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </section>
+      )}
+
+      {/* IP Monitor Logs */}
+      {(snapshot.telemetryEvents.length > 0 || snapshot.decisions.length > 0) && (
+        <section className="space-y-0" id="ip-monitor-logs">
+          <div className="flex items-center justify-between pb-3">
+            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em]">
+              IP Monitor Logs
+            </h2>
+            <div className="flex gap-1">
+              <TabButton
+                active={ipTab === 'telemetry'}
+                onClick={() => setIpTab('telemetry')}
+                count={snapshot.telemetryEvents.length}
+              >
+                Telemetry Events
+              </TabButton>
+              <TabButton
+                active={ipTab === 'decisions'}
+                onClick={() => setIpTab('decisions')}
+                count={snapshot.decisions.length}
+              >
+                IP Decisions
+              </TabButton>
+            </div>
+          </div>
+          <div className="border-t border-border" />
+
+          {ipTab === 'telemetry' && (
+            <div className="rounded-b-xl border-x border-b border-border overflow-hidden">
+              {snapshot.telemetryEvents.length === 0 ? (
+                <div className="px-4 py-6 text-sm text-muted-foreground">
+                  No telemetry events recorded for this agent.
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>IP</TableHead>
+                      <TableHead>Level</TableHead>
+                      <TableHead>Reason</TableHead>
+                      <TableHead>Source</TableHead>
+                      <TableHead>Country</TableHead>
+                      <TableHead>Timestamp</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {snapshot.telemetryEvents.map((e) => (
+                      <TableRow key={e.id}>
+                        <TableCell className="font-mono text-sm">{e.ip}</TableCell>
+                        <TableCell>
+                          <Badge
+                            className={
+                              e.level === 'alert'
+                                ? 'bg-red-950/60 text-red-300 border border-red-700'
+                                : e.level === 'block'
+                                ? 'bg-orange-950/50 text-orange-300 border border-orange-700'
+                                : 'bg-gray-900/70 text-gray-200 border border-gray-700'
+                            }
+                          >
+                            {e.level}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground max-w-xs truncate">
+                          {e.reason}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{e.source}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {e.country ?? '—'}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                          <p>{formatTimestamp(e.created_at)}</p>
+                          <p>{formatRelativeTime(e.created_at)}</p>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </div>
+          )}
+
+          {ipTab === 'decisions' && (
+            <div className="rounded-b-xl border-x border-b border-border overflow-hidden">
+              {snapshot.decisions.length === 0 ? (
+                <div className="px-4 py-6 text-sm text-muted-foreground">
+                  No IP decisions recorded for this agent.
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>IP</TableHead>
+                      <TableHead>Action</TableHead>
+                      <TableHead>Reason</TableHead>
+                      <TableHead>Source</TableHead>
+                      <TableHead>Country</TableHead>
+                      <TableHead>Expires</TableHead>
+                      <TableHead>Timestamp</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {snapshot.decisions.map((d) => (
+                      <TableRow key={d.id}>
+                        <TableCell className="font-mono text-sm">{d.ip}</TableCell>
+                        <TableCell>
+                          <Badge
+                            className={
+                              d.action === 'block'
+                                ? 'bg-red-950/60 text-red-300 border border-red-700'
+                                : d.action === 'captcha'
+                                ? 'bg-amber-950/50 text-amber-300 border border-amber-700'
+                                : 'bg-gray-900/70 text-gray-200 border border-gray-700'
+                            }
+                          >
+                            {d.action}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground max-w-xs truncate">
+                          {d.reason}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{d.source}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {d.country ?? '—'}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                          {d.expires_at ? formatRelativeTime(d.expires_at) : '—'}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                          <p>{formatTimestamp(d.created_at)}</p>
+                          <p>{formatRelativeTime(d.created_at)}</p>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
+}
+
+function TabButton({
+  active,
+  onClick,
+  count,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  count: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+        active
+          ? 'bg-white/10 text-white'
+          : 'text-muted-foreground hover:text-white hover:bg-white/5'
+      }`}
+    >
+      {children}
+      <span
+        className={`rounded-full px-1.5 py-0.5 text-[10px] tabular-nums ${
+          active ? 'bg-white/20 text-white' : 'bg-white/5 text-muted-foreground'
+        }`}
+      >
+        {count}
+      </span>
+    </button>
+  );
+}
+
+function SeverityBadge({ severity }: { severity: string }) {
+  const cls =
+    severity === 'critical'
+      ? 'bg-red-950/60 text-red-300 border border-red-700'
+      : severity === 'high'
+      ? 'bg-orange-950/50 text-orange-300 border border-orange-700'
+      : severity === 'medium'
+      ? 'bg-amber-950/50 text-amber-300 border border-amber-700'
+      : 'bg-gray-900/70 text-gray-200 border border-gray-700';
+  return <Badge className={cls}>{severity}</Badge>;
 }

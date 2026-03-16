@@ -145,7 +145,7 @@ export default function WhitelistPage() {
         </div>
       )}
 
-      <div className="rounded-xl border border-border bg-card/30 p-4 space-y-4">
+      <div className="space-y-4">
         <div className="grid gap-3 lg:grid-cols-[minmax(0,220px)_minmax(0,1fr)_auto]">
           <Input
             value={whitelistIp}
