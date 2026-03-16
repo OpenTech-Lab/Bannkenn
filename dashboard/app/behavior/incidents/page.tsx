@@ -99,19 +99,20 @@ export default function BehaviorIncidentsPage() {
       </div>
 
       {/* Incidents table */}
-      <section className="rounded-xl border border-border bg-card p-5 space-y-4">
-        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em]">
+      <section className="space-y-0">
+        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em] pb-3">
           Incident Backlog
         </h2>
+        <div className="border-t border-border" />
         {incidents.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border bg-card/20 px-6 py-12 text-center">
+          <div className="px-6 py-12 text-center">
             <h3 className="text-lg font-semibold text-white">No incidents yet</h3>
             <p className="text-sm text-muted-foreground mt-2">
               No incidents have been reconstructed yet.
             </p>
           </div>
         ) : (
-          <div className="rounded-lg border border-border overflow-hidden">
+          <div className="rounded-b-xl border-x border-b border-border overflow-hidden">
             <Table>
               <TableHeader>
                 <TableRow>

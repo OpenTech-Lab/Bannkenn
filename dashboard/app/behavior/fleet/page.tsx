@@ -169,10 +169,11 @@ export default function FleetPage() {
       </div>
 
       {/* Fleet containment table */}
-      <section className="rounded-xl border border-border bg-card p-5 space-y-4">
-        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em]">
+      <section className="space-y-0">
+        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em] pb-3">
           Containment Status Panel
         </h2>
+        <div className="border-t border-border mb-4" />
         {summaries.length === 0 ? (
           <p className="text-sm text-muted-foreground">No agents are registered yet.</p>
         ) : (
@@ -191,7 +192,7 @@ export default function FleetPage() {
                     <div className="space-y-1.5">
                       <div className="flex flex-wrap items-center gap-2">
                         <Link
-                          href={`/behavior/agents/${summary.agent.id}`}
+                          href={`/agents/${summary.agent.id}`}
                           className="font-semibold text-white hover:text-blue-400 transition-colors"
                         >
                           {agentLabel(summary.agent)}
@@ -301,11 +302,12 @@ export default function FleetPage() {
 
       {/* Active containment list */}
       {activeContainment.length > 0 && (
-        <section className="rounded-xl border border-border bg-card p-5 space-y-4">
-          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em]">
+        <section className="space-y-0">
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em] pb-3">
             Active Throttling / FUSE
           </h2>
-          <div className="rounded-lg border border-border overflow-hidden">
+          <div className="border-t border-border" />
+          <div className="rounded-b-xl border-x border-b border-border overflow-hidden">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -322,7 +324,7 @@ export default function FleetPage() {
                   <TableRow key={s.agent.id}>
                     <TableCell className="font-medium">
                       <Link
-                        href={`/behavior/agents/${s.agent.id}`}
+                        href={`/agents/${s.agent.id}`}
                         className="text-blue-400 hover:text-blue-300 hover:underline"
                       >
                         {agentLabel(s.agent)}

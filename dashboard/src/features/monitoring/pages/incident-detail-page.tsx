@@ -160,7 +160,7 @@ export function IncidentDetailPage() {
                 {relatedAgents.map((agent) => (
                   <Link
                     key={agent.id}
-                    href={`/behavior/agents/${agent.id}`}
+                    href={`/agents/${agent.id}`}
                     className="rounded-full border border-white/10 px-3 py-1 text-sm text-slate-200 transition-colors hover:border-sky-400/40 hover:text-sky-200"
                   >
                     {agent.nickname?.trim() || agent.name}

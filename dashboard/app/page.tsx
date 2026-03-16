@@ -374,8 +374,8 @@ export default function HomeDashboard() {
 
       {/* Fleet status table */}
       {summaries.length > 0 && (
-        <section className="rounded-xl border border-border bg-card p-5 space-y-4">
-          <div className="flex items-center justify-between">
+        <section className="space-y-0">
+          <div className="flex items-center justify-between pb-3">
             <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em]">
               Fleet Status
             </h2>
@@ -383,7 +383,8 @@ export default function HomeDashboard() {
               Manage fleet
             </Link>
           </div>
-          <div className="rounded-lg border border-border overflow-hidden">
+          <div className="border-t border-border" />
+          <div className="rounded-b-xl border-x border-b border-border overflow-hidden">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -402,7 +403,7 @@ export default function HomeDashboard() {
                   <TableRow key={s.agent.id}>
                     <TableCell className="font-medium">
                       <Link
-                        href={`/behavior/agents/${s.agent.id}`}
+                        href={`/agents/${s.agent.id}`}
                         className="text-blue-400 hover:text-blue-300 hover:underline"
                       >
                         {s.agent.nickname?.trim() || s.agent.name}
@@ -441,7 +442,7 @@ export default function HomeDashboard() {
                         const count = telemetryCountByAgent.get(s.agent.name) ?? 0;
                         return count > 0 ? (
                           <Link
-                            href={`/behavior/agents/${s.agent.id}#ip-monitor-logs`}
+                            href={`/agents/${s.agent.id}#ip-monitor-logs`}
                             className="text-blue-400 hover:text-blue-300 hover:underline"
                           >
                             {count}
@@ -454,7 +455,7 @@ export default function HomeDashboard() {
                     <TableCell className="text-right tabular-nums">
                       {s.incidentCount > 0 ? (
                         <Link
-                          href={`/behavior/agents/${s.agent.id}#related-incidents`}
+                          href={`/agents/${s.agent.id}#related-incidents`}
                           className="text-blue-400 hover:text-blue-300 hover:underline"
                         >
                           {s.incidentCount}
@@ -500,8 +501,8 @@ export default function HomeDashboard() {
       {/* Two-column: Recent Incidents + Recent IP Blocks */}
       <div className="grid gap-4 lg:grid-cols-2">
         {/* Recent incidents */}
-        <section className="rounded-xl border border-border bg-card p-5 space-y-4">
-          <div className="flex items-center justify-between">
+        <section className="space-y-0">
+          <div className="flex items-center justify-between pb-3">
             <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em]">
               Recent Incidents
             </h2>
@@ -509,10 +510,11 @@ export default function HomeDashboard() {
               View all
             </Link>
           </div>
+          <div className="border-t border-border" />
           {(snapshot?.incidents.length ?? 0) === 0 ? (
             <p className="text-sm text-muted-foreground py-6 text-center">No incidents yet.</p>
           ) : (
-            <div className="rounded-lg border border-border overflow-hidden">
+            <div className="rounded-b-xl border-x border-b border-border overflow-hidden">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -547,8 +549,8 @@ export default function HomeDashboard() {
         </section>
 
         {/* Recent IP blocks */}
-        <section className="rounded-xl border border-border bg-card p-5 space-y-4">
-          <div className="flex items-center justify-between">
+        <section className="space-y-0">
+          <div className="flex items-center justify-between pb-3">
             <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em]">
               Recent IP Blocks
             </h2>
@@ -556,10 +558,11 @@ export default function HomeDashboard() {
               Lookup IP
             </Link>
           </div>
+          <div className="border-t border-border" />
           {decisions.length === 0 ? (
             <p className="text-sm text-muted-foreground py-6 text-center">No recent blocks.</p>
           ) : (
-            <div className="rounded-lg border border-border overflow-hidden">
+            <div className="rounded-b-xl border-x border-b border-border overflow-hidden">
               <Table>
                 <TableHeader>
                   <TableRow>

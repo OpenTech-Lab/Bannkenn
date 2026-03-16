@@ -39,7 +39,7 @@ export function IncidentTimeline({ timeline, agents }: IncidentTimelineProps) {
                       </span>
                       {agentId ? (
                         <Link
-                          href={`/behavior/agents/${agentId}`}
+                          href={`/agents/${agentId}`}
                           className="text-xs text-sky-300 transition-colors hover:text-sky-200"
                         >
                           {entry.agent_name}

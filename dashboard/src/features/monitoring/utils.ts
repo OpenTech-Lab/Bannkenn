@@ -183,7 +183,7 @@ export function buildActivityEntries(
       description: describeBehaviorEvent(event),
       agentName: event.agent_name,
       createdAt: event.created_at,
-      href: agentId ? `/behavior/agents/${agentId}` : undefined,
+      href: agentId ? `/agents/${agentId}` : undefined,
       tags: [event.level, `${event.score} score`, event.watched_root],
     });
   }
@@ -198,7 +198,7 @@ export function buildActivityEntries(
       description: describeContainmentEvent(event),
       agentName: event.agent_name,
       createdAt: event.created_at,
-      href: agentId ? `/behavior/agents/${agentId}` : undefined,
+      href: agentId ? `/agents/${agentId}` : undefined,
       tags: [event.state, `${event.score} score`, event.watched_root],
     });
   }
@@ -216,7 +216,7 @@ export function buildActivityEntries(
       href: alert.incident_id
         ? `/behavior/incidents/${alert.incident_id}`
         : agentId
-        ? `/behavior/agents/${agentId}`
+        ? `/agents/${agentId}`
         : undefined,
       tags: [alert.alert_type, alert.severity],
     });

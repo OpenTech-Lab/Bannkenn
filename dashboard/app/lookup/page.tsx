@@ -533,7 +533,7 @@ function SourceCell({
   if (agentId !== null) {
     return (
       <>
-        <Link href={`/behavior/agents/${agentId}`} className="text-blue-400 hover:text-blue-300 hover:underline">
+        <Link href={`/agents/${agentId}`} className="text-blue-400 hover:text-blue-300 hover:underline">
           {sourceLabel}
         </Link>
         {sourceLabel !== source ? (

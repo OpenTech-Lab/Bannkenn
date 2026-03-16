@@ -168,7 +168,7 @@ export default function IpMonitorOverview() {
                   <TableRow key={s.agent.id}>
                     <TableCell className="font-medium">
                       <Link
-                        href={`/behavior/agents/${s.agent.id}#ip-monitor-logs`}
+                        href={`/agents/${s.agent.id}#ip-monitor-logs`}
                         className="text-blue-400 hover:text-blue-300 hover:underline"
                       >
                         {s.agent.nickname?.trim() || s.agent.name}
@@ -206,7 +206,7 @@ export default function IpMonitorOverview() {
                     <TableCell className="text-right tabular-nums font-semibold">
                       {s.total > 0 ? (
                         <Link
-                          href={`/behavior/agents/${s.agent.id}#ip-monitor-logs`}
+                          href={`/agents/${s.agent.id}#ip-monitor-logs`}
                           className="text-white hover:text-blue-300 hover:underline"
                         >
                           {s.total}

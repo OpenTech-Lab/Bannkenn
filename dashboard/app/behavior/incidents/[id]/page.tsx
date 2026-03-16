@@ -146,7 +146,7 @@ export default function BehaviorIncidentDetailPage() {
             {relatedAgents.map((agent) => (
               <Link
                 key={agent.id}
-                href={`/behavior/agents/${agent.id}`}
+                href={`/agents/${agent.id}`}
                 className="rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-1.5 text-sm text-gray-200 hover:border-gray-600 hover:text-blue-400 transition-colors"
               >
                 {agent.nickname?.trim() || agent.name}
@@ -193,11 +193,12 @@ export default function BehaviorIncidentDetailPage() {
 
       {/* Timeline */}
       {snapshot.detail.timeline.length > 0 && (
-        <section className="rounded-xl border border-border bg-card p-5 space-y-4">
-          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em]">
+        <section className="space-y-0">
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em] pb-3">
             Event Timeline
           </h2>
-          <div className="rounded-lg border border-border overflow-hidden">
+          <div className="border-t border-border" />
+          <div className="rounded-b-xl border-x border-b border-border overflow-hidden">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -223,7 +224,7 @@ export default function BehaviorIncidentDetailPage() {
                       <TableCell>
                         {agentId ? (
                           <Link
-                            href={`/behavior/agents/${agentId}`}
+                            href={`/agents/${agentId}`}
                             className="text-blue-400 hover:text-blue-300 hover:underline text-sm"
                           >
                             {entry.agent_name}
