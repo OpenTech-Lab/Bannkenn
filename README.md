@@ -25,6 +25,7 @@ Built for privacy-focused users, homelabs, and small teams that want full contro
 
 ## How to use
 
+### Server/Dashboard
 For `v1.4.6`, most users only need to set up `.env` and run the shell scripts under `scripts/`.
 
 1. Clone the repo and create `.env`
@@ -63,8 +64,23 @@ git pull
 sudo bash scripts/update-server.sh
 ```
 
-5. Install the agent on each Linux host
 
+### Agent
+1. Install the agent on each Linux host
+
+Check version in release:
+```bash
+VERSION="v1.4.17"
+
+curl -Lo bannkenn-agent https://github.com/OpenTech-Lab/bannkenn/releases/download/${VERSION}/bannkenn-agent-linux-x64
+curl -Lo bannkenn-containment.bpf.o https://github.com/OpenTech-Lab/bannkenn/releases/download/${VERSION}/bannkenn-containment-linux-x64.bpf.o
+
+sudo install -m 755 bannkenn-agent /usr/local/bin/bannkenn-agent
+sudo install -d /usr/lib/bannkenn/ebpf
+sudo install -m 644 bannkenn-containment.bpf.o /usr/lib/bannkenn/ebpf/bannkenn-containment.bpf.o
+```
+
+Or Download whole repo then:
 ```bash
 sudo bash scripts/install.sh
 sudo bannkenn-agent init
@@ -91,7 +107,7 @@ curl -k https://localhost:3022/api/v1/health
 sudo systemctl status bannkenn-agent --no-pager
 ```
 
-6. Update the agent later
+2. Update the agent later
 
 ```bash
 sudo bannkenn-agent update
@@ -108,11 +124,11 @@ sudo bannkenn-agent update --configure-containment
 If you want to manage certificates yourself, use `scripts/generate-ip-cert.sh` before the native-TLS install. Otherwise, `scripts/install.sh dashboard-native-tls` can generate the cert files from `.env`.
 
 ### Path sample: 
-<pre>
+```
 /etc/passwd,/etc/shadow,/etc/sudoers,/etc/sudoers.d/,/etc/pam.d/,/root/.ssh/authorized_keys,/bin/,/sbin/,/usr/bin/,/usr/sbin/,/usr/local/bin/,/lib/modules/,/etc/systemd/system/,/usr/lib/systemd/system/,/etc/init.d/,/etc/crontab/,/etc/cron.d/,/etc/rc.local,/etc/ld.so.preload,/etc/profile.d/,/etc/bashrc,/etc/hosts,/tmp/,/var/tmp/,/dev/shm/
-</pre>
+```
 
-## GeoLite2 Databases
+## GeoLite2 Databases(Server)
 
 IP geolocation (country, city, ASN) requires three MaxMind GeoLite2 databases placed in `server/data/`.
 These files are **not bundled** with the repository — you must download them separately.
