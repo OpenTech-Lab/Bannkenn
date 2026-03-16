@@ -156,27 +156,33 @@ static __always_inline void copy_path(char *dst, const char *src, __u32 len)
 
 static __always_inline int prefix_matches(const char *path, const struct root_path_entry *prefix)
 {
-    if (!prefix || prefix->len == 0 || prefix->len >= BK_PATH_CAPACITY) {
+    __u32 prefix_len;
+    __u32 last_index;
+
+    if (!prefix) {
         return 0;
     }
 
-    for (int i = 0; i < BK_PATH_CAPACITY; i++) {
-        if ((__u32)(i + 1) == prefix->len) {
-            if (path[i] != prefix->path[i]) {
-                return 0;
-            }
-            if (prefix->path[i] == '/') {
-                return 1;
-            }
-            return path[i + 1] == '\0' || path[i + 1] == '/';
-        }
+    prefix_len = prefix->len;
+    if (prefix_len == 0 || prefix_len >= BK_PATH_CAPACITY) {
+        return 0;
+    }
+    last_index = prefix_len - 1;
 
+    for (int i = 0; i < BK_PATH_CAPACITY; i++) {
+        if ((__u32)i > last_index) {
+            break;
+        }
         if (path[i] != prefix->path[i] || path[i] == '\0') {
             return 0;
         }
     }
 
-    return 0;
+    if (prefix->path[last_index] == '/') {
+        return 1;
+    }
+
+    return path[prefix_len] == '\0' || path[prefix_len] == '/';
 }
 
 static __always_inline int is_path_in_map(const char *path, void *map, __u32 max_entries)
