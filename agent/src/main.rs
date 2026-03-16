@@ -334,7 +334,10 @@ async fn run() -> Result<()> {
 
         loop {
             let sensor = sensor_name_for_heartbeat.read().await.clone();
-            match heartbeat_client.send_heartbeat(butterfly_enabled, sensor).await {
+            match heartbeat_client
+                .send_heartbeat(butterfly_enabled, sensor)
+                .await
+            {
                 Ok(_) => tracing::debug!("Heartbeat sent"),
                 Err(e) => tracing::warn!("Failed to send heartbeat: {}", e),
             }

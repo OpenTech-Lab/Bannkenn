@@ -103,7 +103,16 @@ impl Db {
         .await?;
 
         Ok(row.map(
-            |(id, name, uuid, nickname, created_at, last_seen_at, butterfly_shield_enabled, containment_sensor)| {
+            |(
+                id,
+                name,
+                uuid,
+                nickname,
+                created_at,
+                last_seen_at,
+                butterfly_shield_enabled,
+                containment_sensor,
+            )| {
                 AgentStatusRow {
                     id,
                     name,
@@ -174,7 +183,16 @@ impl Db {
         Ok(rows
             .into_iter()
             .map(
-                |(id, name, uuid, nickname, created_at, last_seen_at, butterfly_shield_enabled, containment_sensor)| {
+                |(
+                    id,
+                    name,
+                    uuid,
+                    nickname,
+                    created_at,
+                    last_seen_at,
+                    butterfly_shield_enabled,
+                    containment_sensor,
+                )| {
                     AgentStatusRow {
                         id,
                         name,
