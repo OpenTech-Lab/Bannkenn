@@ -1,6 +1,9 @@
 use crate::db::Db;
+use futures_util::TryStreamExt;
 use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::{interval, Duration};
+use tokio_util::io::StreamReader;
 use tracing::{error, info};
 
 pub async fn fetch_ipsum_feed(db: Arc<Db>) -> anyhow::Result<()> {
@@ -8,11 +11,12 @@ pub async fn fetch_ipsum_feed(db: Arc<Db>) -> anyhow::Result<()> {
 
     let response =
         reqwest::get("https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.txt").await?;
+    let stream = response
+        .bytes_stream()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+    let mut lines = BufReader::new(StreamReader::new(stream)).lines();
 
-    let text = response.text().await?;
-
-    for line in text.lines() {
-        // Parse lines as <ip>\t<count>
+    while let Some(line) = lines.next_line().await? {
         let parts: Vec<&str> = line.split('\t').collect();
         if parts.len() >= 2 {
             if let Ok(count) = parts[1].trim().parse::<i32>() {
@@ -22,12 +26,9 @@ pub async fn fetch_ipsum_feed(db: Arc<Db>) -> anyhow::Result<()> {
                         .insert_decision(ip, "ipsum_feed", "block", "ipsum_feed")
                         .await
                     {
-                        Ok(Some(_)) => {
-                            // Successfully inserted
-                        }
+                        Ok(Some(_)) => {}
                         Ok(None) => info!("Skipping whitelisted IP from ipsum feed: {}", ip),
                         Err(e) => {
-                            // Log but continue processing other IPs
                             error!("Failed to insert decision for IP {}: {}", ip, e);
                         }
                     }
@@ -46,18 +47,21 @@ async fn fetch_firehol_feed(db: Arc<Db>, url: &str, source: &str) -> anyhow::Res
     info!("Fetching FireHOL feed: {}", source);
 
     let response = reqwest::get(url).await?;
-    let text = response.text().await?;
+    let stream = response
+        .bytes_stream()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+    let mut lines = BufReader::new(StreamReader::new(stream)).lines();
 
-    for line in text.lines() {
-        let entry = line.trim();
-        if entry.is_empty() || entry.starts_with('#') {
+    while let Some(line) = lines.next_line().await? {
+        let trimmed = line.trim().to_owned();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        match db.insert_decision(entry, source, "block", source).await {
+        match db.insert_decision(&trimmed, source, "block", source).await {
             Ok(Some(_)) => {}
-            Ok(None) => info!("Skipping whitelisted entry from {} feed: {}", source, entry),
+            Ok(None) => info!("Skipping whitelisted entry from {} feed: {}", source, trimmed),
             Err(e) => {
-                error!("Failed to insert decision for {}: {}", entry, e);
+                error!("Failed to insert decision for {}: {}", trimmed, e);
             }
         }
     }

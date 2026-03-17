@@ -12,6 +12,7 @@ target/
 /server.toml
 /agent.toml
 *.local.toml
+docs/analyze_data/
 
 # SQLite databases
 *.db

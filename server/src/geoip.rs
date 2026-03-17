@@ -6,6 +6,11 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use tracing::{info, warn};
 
+#[cfg(unix)]
+type DbReader = Reader<maxminddb::Mmap>;
+#[cfg(not(unix))]
+type DbReader = Reader<Vec<u8>>;
+
 #[derive(Debug, Clone)]
 pub struct GeoIpResult {
     pub country: String,
@@ -14,8 +19,8 @@ pub struct GeoIpResult {
 
 #[derive(Debug)]
 struct GeoIpResolver {
-    country: Option<Reader<Vec<u8>>>,
-    asn: Option<Reader<Vec<u8>>>,
+    country: Option<DbReader>,
+    asn: Option<DbReader>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +38,13 @@ struct AsnRecord {
     autonomous_system_organization: Option<String>,
 }
 
+fn open_mmdb(path: &PathBuf) -> Result<DbReader, maxminddb::MaxMindDBError> {
+    #[cfg(unix)]
+    return Reader::open_mmap(path);
+    #[cfg(not(unix))]
+    return Reader::open_readfile(path);
+}
+
 impl GeoIpResolver {
     fn load() -> Self {
         let mmdb_dir =
@@ -40,7 +52,7 @@ impl GeoIpResolver {
         let country_path = PathBuf::from(&mmdb_dir).join("GeoLite2-Country.mmdb");
         let asn_path = PathBuf::from(&mmdb_dir).join("GeoLite2-ASN.mmdb");
 
-        let country = match Reader::open_readfile(&country_path) {
+        let country = match open_mmdb(&country_path) {
             Ok(reader) => {
                 info!("GeoIP country DB loaded from {}", country_path.display());
                 Some(reader)
@@ -55,7 +67,7 @@ impl GeoIpResolver {
             }
         };
 
-        let asn = match Reader::open_readfile(&asn_path) {
+        let asn = match open_mmdb(&asn_path) {
             Ok(reader) => {
                 info!("GeoIP ASN DB loaded from {}", asn_path.display());
                 Some(reader)
@@ -87,9 +99,9 @@ impl GeoIpResolver {
             if let Ok(record) = reader.lookup::<CountryRecord>(ip_addr) {
                 if let Some(country) = record
                     .country
-                    .and_then(|entry| entry.names)
-                    .and_then(|names| names.get("en").cloned())
-                    .filter(|value| !value.trim().is_empty())
+                    .and_then(|entry: NamedRecord| entry.names)
+                    .and_then(|names: HashMap<String, String>| names.get("en").cloned())
+                    .filter(|value: &String| !value.trim().is_empty())
                 {
                     result.country = country;
                 }
@@ -100,7 +112,7 @@ impl GeoIpResolver {
             if let Ok(record) = reader.lookup::<AsnRecord>(ip_addr) {
                 if let Some(org) = record
                     .autonomous_system_organization
-                    .filter(|value| !value.trim().is_empty())
+                    .filter(|value: &String| !value.trim().is_empty())
                 {
                     result.asn_org = org;
                 }
