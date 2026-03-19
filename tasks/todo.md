@@ -15,10 +15,12 @@
 - [x] Reduce agent CPU usage with batching, bounded queues, caching, debounce windows, and backpressure instead of high-frequency polling.
 - [x] Replace repeated identical warning paths with rate-limited or coalesced warnings.
 - [x] Verify the agent cannot become the top CPU consumer during an event storm.
+- [x] Fix the dashboard Next.js workspace-root configuration so production builds stop warning about multiple lockfiles.
 
 ## Phase 2: Attribution And Trust
 - [x] Enrich collected events with PID, PPID, executable path, command line, UID/GID, timestamp, operation type, target path, rename extension changes, bytes written, and host/container context.
 - [ ] Build a process identity profile that tracks executable path, package owner, parent chain, service unit, first-seen time, and known-good classification.
+- [x] Add service-unit, first-seen, and explicit trust-class metadata to process attribution and behavior events as the next step toward the identity profile.
 - [ ] Introduce a trust model with clear classes such as trusted system process, trusted package-managed process, allowed local process, unknown process, and suspicious process.
 - [ ] Add a policy-driven allowlist/baseline layer keyed by executable path, package name, service unit, container image, and maintenance window.
 - [ ] Identify package-manager and systemd-maintenance activity explicitly so protected-path changes can be downgraded when context is trustworthy.
@@ -57,3 +59,7 @@
 - 2026-03-19: Behavior-event attribution now preserves PPID, UID/GID, and container runtime/container ID from `/proc` through agent uploads, durable outbox replay, SQLite/Postgres storage, incident timeline payloads, and the dashboard agent detail view.
 - Regression coverage for this pass includes journald source-planning tests, `/proc/<pid>/status` parser coverage, agent outbox serialization round-trips for enriched behavior payloads, server behavior round-trips/archive checks for the new fields, and another dashboard production build.
 - Verification for this pass: `cargo test -p bannkenn-agent`, `cargo test -p bannkenn-server`, `cargo clippy -p bannkenn-agent -p bannkenn-server --tests -- -D warnings`, and `npm run build` in `dashboard/`.
+- 2026-03-19: The dashboard Next.js workspace-root warning is fixed by setting `outputFileTracingRoot` explicitly, so production builds no longer complain about multiple lockfiles.
+- 2026-03-19: Process identity attribution now carries `service_unit`, `first_seen_at`, and an explicit `trust_class` through lifecycle tracking, scoring, agent uploads, SQLite/Postgres storage, and the dashboard behavior-event view.
+- Regression coverage for this pass includes lifecycle service-unit/first-seen/trust-class tests, scorer coverage for trust-aware maintenance downgrades, clean `cargo clippy` on agent/server, and a dashboard production build without the prior workspace-root warning.
+- Remaining runtime validation: journald-first behavior on a live systemd host is still intentionally tracked in `Verification` because it requires host-level execution rather than another repo-only change.

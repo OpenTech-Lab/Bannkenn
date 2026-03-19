@@ -2,7 +2,7 @@ use bannkenn_agent::{
     client::ContainmentActionRow,
     config::ContainmentConfig,
     containment::{ContainmentCoordinator, ContainmentState},
-    ebpf::events::{BehaviorEvent, BehaviorLevel, FileOperationCounts},
+    ebpf::events::{BehaviorEvent, BehaviorLevel, FileOperationCounts, ProcessTrustClass},
     enforcement::EnforcementAction,
 };
 use chrono::{Duration, Utc};
@@ -16,6 +16,9 @@ fn event(level: BehaviorLevel, score: u32, pid: Option<u32>) -> BehaviorEvent {
         parent_pid: Some(1),
         uid: Some(1000),
         gid: Some(1000),
+        service_unit: Some("backup.service".to_string()),
+        first_seen_at: Some(Utc::now()),
+        trust_class: Some(ProcessTrustClass::AllowedLocal),
         process_name: Some("python3".to_string()),
         exe_path: Some("/usr/bin/python3".to_string()),
         command_line: Some("python3 encrypt.py".to_string()),

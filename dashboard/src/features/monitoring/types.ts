@@ -30,6 +30,9 @@ export type BehaviorEvent = {
   parent_pid?: number | null;
   uid?: number | null;
   gid?: number | null;
+  service_unit?: string | null;
+  first_seen_at?: string | null;
+  trust_class?: string | null;
   process_name?: string | null;
   exe_path?: string | null;
   command_line?: string | null;

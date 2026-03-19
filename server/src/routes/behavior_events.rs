@@ -25,6 +25,9 @@ pub struct CreateBehaviorEventRequest {
     pub parent_pid: Option<u32>,
     pub uid: Option<u32>,
     pub gid: Option<u32>,
+    pub service_unit: Option<String>,
+    pub first_seen_at: Option<String>,
+    pub trust_class: Option<String>,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
@@ -77,6 +80,11 @@ pub async fn create(
         parent_pid: payload.parent_pid,
         uid: payload.uid,
         gid: payload.gid,
+        service_unit: payload
+            .service_unit
+            .map(|s| cap_string(s, MAX_STRING_BYTES)),
+        first_seen_at: payload.first_seen_at,
+        trust_class: payload.trust_class.map(|s| cap_string(s, MAX_STRING_BYTES)),
         process_name: payload.process_name,
         exe_path: payload.exe_path,
         command_line: payload

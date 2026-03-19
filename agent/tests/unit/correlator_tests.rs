@@ -1,4 +1,5 @@
 use super::*;
+use crate::ebpf::events::ProcessTrustClass;
 use crate::ebpf::lifecycle::{LifecycleEvent, TrackedProcess};
 
 #[test]
@@ -25,6 +26,9 @@ fn correlator_prefers_non_protected_process_with_exact_path_hits() {
                 parent_pid: None,
                 uid: None,
                 gid: None,
+                service_unit: Some("systemd.service".to_string()),
+                first_seen_at: chrono::Utc::now(),
+                trust_class: ProcessTrustClass::TrustedSystem,
                 process_name: "systemd".to_string(),
                 exe_path: "/usr/lib/systemd/systemd".to_string(),
                 command_line: "systemd".to_string(),
@@ -40,6 +44,9 @@ fn correlator_prefers_non_protected_process_with_exact_path_hits() {
                 parent_pid: Some(1),
                 uid: Some(1000),
                 gid: Some(1000),
+                service_unit: Some("backup.service".to_string()),
+                first_seen_at: chrono::Utc::now(),
+                trust_class: ProcessTrustClass::AllowedLocal,
                 process_name: "python3".to_string(),
                 exe_path: "/usr/bin/python3".to_string(),
                 command_line: "python3 encrypt.py".to_string(),

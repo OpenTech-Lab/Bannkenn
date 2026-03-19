@@ -38,6 +38,12 @@ fn archive_record_preserves_ingested_behavior_fields() {
     assert_eq!(record.parent_pid, Some(1));
     assert_eq!(record.uid, Some(1000));
     assert_eq!(record.gid, Some(1000));
+    assert_eq!(record.service_unit.as_deref(), Some("backup.service"));
+    assert_eq!(
+        record.first_seen_at.as_deref(),
+        Some("2026-03-14T08:30:00+00:00")
+    );
+    assert_eq!(record.trust_class.as_deref(), Some("allowed_local_process"));
     assert_eq!(record.parent_process_name.as_deref(), Some("systemd"));
     assert_eq!(record.parent_command_line.as_deref(), Some("systemd"));
     assert_eq!(record.container_runtime.as_deref(), Some("docker"));

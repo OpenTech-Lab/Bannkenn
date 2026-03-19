@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::ContainmentConfig;
-use crate::ebpf::events::{FileActivityBatch, FileOperationCounts, ProcessInfo};
+use crate::ebpf::events::{FileActivityBatch, FileOperationCounts, ProcessInfo, ProcessTrustClass};
 use chrono::Utc;
 
 fn batch_with_ops(
@@ -27,6 +27,9 @@ fn process(pid: u32, process_name: &str, exe_path: &str, command_line: &str) -> 
         parent_pid: None,
         uid: None,
         gid: None,
+        service_unit: None,
+        first_seen_at: Utc::now(),
+        trust_class: ProcessTrustClass::Unknown,
         process_name: process_name.to_string(),
         exe_path: exe_path.to_string(),
         command_line: command_line.to_string(),
@@ -61,6 +64,9 @@ fn mass_rename_scores_as_suspicious() {
             parent_pid: Some(1),
             uid: Some(1000),
             gid: Some(1000),
+            service_unit: Some("backup.service".to_string()),
+            first_seen_at: Utc::now(),
+            trust_class: ProcessTrustClass::AllowedLocal,
             process_name: "python3".to_string(),
             exe_path: "/usr/bin/python3".to_string(),
             command_line: "python3 encrypt.py".to_string(),
@@ -252,6 +258,8 @@ fn trusted_maintenance_activity_is_downgraded() {
     );
     proc.parent_process_name = Some("systemd".to_string());
     proc.parent_command_line = Some("systemd".to_string());
+    proc.service_unit = Some("fwupd.service".to_string());
+    proc.trust_class = ProcessTrustClass::TrustedPackageManaged;
     let correlation = CorrelationResult {
         process: Some(proc),
         protected_hits: 1,

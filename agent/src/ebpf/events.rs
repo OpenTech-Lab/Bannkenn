@@ -56,6 +56,11 @@ pub struct ProcessInfo {
     pub uid: Option<u32>,
     #[serde(default)]
     pub gid: Option<u32>,
+    #[serde(default)]
+    pub service_unit: Option<String>,
+    pub first_seen_at: DateTime<Utc>,
+    #[serde(default)]
+    pub trust_class: ProcessTrustClass,
     pub process_name: String,
     pub exe_path: String,
     pub command_line: String,
@@ -68,6 +73,29 @@ pub struct ProcessInfo {
     pub container_runtime: Option<String>,
     #[serde(default)]
     pub container_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessTrustClass {
+    TrustedSystem,
+    TrustedPackageManaged,
+    AllowedLocal,
+    #[default]
+    Unknown,
+    Suspicious,
+}
+
+impl ProcessTrustClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TrustedSystem => "trusted_system_process",
+            Self::TrustedPackageManaged => "trusted_package_managed_process",
+            Self::AllowedLocal => "allowed_local_process",
+            Self::Unknown => "unknown_process",
+            Self::Suspicious => "suspicious_process",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -99,6 +127,9 @@ pub struct BehaviorEvent {
     pub parent_pid: Option<u32>,
     pub uid: Option<u32>,
     pub gid: Option<u32>,
+    pub service_unit: Option<String>,
+    pub first_seen_at: Option<DateTime<Utc>>,
+    pub trust_class: Option<ProcessTrustClass>,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,

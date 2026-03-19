@@ -1,8 +1,40 @@
 use crate::config::ContainmentConfig;
+use crate::ebpf::events::ProcessTrustClass;
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+const TRUSTED_SYSTEM_EXEC_PREFIXES: &[&str] = &["/usr/", "/bin/", "/sbin/", "/lib/", "/nix/store/"];
+const TRUSTED_PACKAGE_MANAGED_PATTERNS: &[&str] = &[
+    "apt",
+    "apt-get",
+    "aptitude",
+    "dpkg",
+    "dpkg-preconfigure",
+    "dpkg-deb",
+    "dnf",
+    "yum",
+    "rpm",
+    "apk",
+    "pacman",
+    "packagekitd",
+    "snap",
+    "snapd",
+    "fwupd",
+    "fwupdmgr",
+    "systemd",
+    "systemctl",
+    "systemd-tmpfiles",
+    "systemd-sysusers",
+    "systemd-sysctl",
+    "systemd-udevd",
+    "unattended-upgrade",
+    "unattended-upgrade-shutdown",
+];
+const LOCAL_EXEC_PREFIXES: &[&str] = &["/usr/local/", "/opt/", "/srv/", "/home/", "/root/"];
+const TEMP_EXEC_PREFIXES: &[&str] = &["/tmp/", "/var/tmp/"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackedProcess {
@@ -10,6 +42,9 @@ pub struct TrackedProcess {
     pub parent_pid: Option<u32>,
     pub uid: Option<u32>,
     pub gid: Option<u32>,
+    pub service_unit: Option<String>,
+    pub first_seen_at: DateTime<Utc>,
+    pub trust_class: ProcessTrustClass,
     pub process_name: String,
     pub exe_path: String,
     pub command_line: String,
@@ -45,6 +80,7 @@ pub struct ProcessLifecycleTracker {
     watch_roots: Vec<PathBuf>,
     protected_pid_allowlist: Vec<String>,
     previous: HashMap<u32, ProcessIdentity>,
+    profiles: HashMap<String, ProcessProfileState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,11 +89,23 @@ struct ProcessIdentity {
     exe_path: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProcessProfileState {
+    first_seen_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct ProcessStatusMetadata {
     parent_pid: Option<u32>,
     uid: Option<u32>,
     gid: Option<u32>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct CgroupMetadata {
+    service_unit: Option<String>,
+    container_runtime: Option<String>,
+    container_id: Option<String>,
 }
 
 impl ProcessLifecycleTracker {
@@ -76,18 +124,20 @@ impl ProcessLifecycleTracker {
                 .map(|entry| entry.to_ascii_lowercase())
                 .collect(),
             previous: HashMap::new(),
+            profiles: HashMap::new(),
         }
     }
 
     pub async fn refresh(&mut self) -> Result<LifecycleSnapshot> {
         let watch_roots = self.watch_roots.clone();
         let protected_pid_allowlist = self.protected_pid_allowlist.clone();
-        let processes = tokio::task::spawn_blocking(move || {
+        let mut processes = tokio::task::spawn_blocking(move || {
             collect_tracked_processes(&watch_roots, &protected_pid_allowlist)
         })
         .await
         .context("lifecycle task join failed")??;
 
+        self.apply_profile_metadata(&mut processes, Utc::now());
         let events = diff_lifecycle_events(&self.previous, &processes);
         self.previous = processes
             .iter()
@@ -106,6 +156,23 @@ impl ProcessLifecycleTracker {
             processes: processes.into_values().collect(),
             events,
         })
+    }
+
+    fn apply_profile_metadata(
+        &mut self,
+        processes: &mut HashMap<u32, TrackedProcess>,
+        now: DateTime<Utc>,
+    ) {
+        for process in processes.values_mut() {
+            let profile_key = process_profile_key(process);
+            let first_seen_at = self
+                .profiles
+                .entry(profile_key)
+                .or_insert_with(|| ProcessProfileState { first_seen_at: now })
+                .first_seen_at;
+            process.first_seen_at = first_seen_at;
+            process.trust_class = classify_process_trust(process);
+        }
     }
 }
 
@@ -157,7 +224,7 @@ fn inspect_process(
         .parent_pid
         .and_then(inspect_parent_process)
         .unwrap_or((None, None));
-    let (container_runtime, container_id) = read_container_context(proc_dir.join("cgroup"));
+    let cgroup = read_cgroup_metadata(proc_dir.join("cgroup"));
 
     let protected = pid == 1
         || matches_allowlist(&process_name, protected_pid_allowlist)
@@ -168,13 +235,16 @@ fn inspect_process(
         parent_pid: status.parent_pid,
         uid: status.uid,
         gid: status.gid,
+        service_unit: cgroup.service_unit,
+        first_seen_at: Utc::now(),
+        trust_class: ProcessTrustClass::Unknown,
         process_name,
         exe_path,
         command_line,
         parent_process_name,
         parent_command_line,
-        container_runtime,
-        container_id,
+        container_runtime: cgroup.container_runtime,
+        container_id: cgroup.container_id,
         open_paths,
         protected,
     })
@@ -329,13 +399,157 @@ fn inspect_parent_process(ppid: u32) -> Option<(Option<String>, Option<String>)>
     }
 }
 
-fn read_container_context(path: PathBuf) -> (Option<String>, Option<String>) {
-    let Ok(content) = fs::read_to_string(path) else {
-        return (None, None);
+fn process_profile_key(process: &TrackedProcess) -> String {
+    let exe_path = process.exe_path.trim().to_ascii_lowercase();
+    let service_unit = process
+        .service_unit
+        .as_deref()
+        .unwrap_or("-")
+        .trim()
+        .to_ascii_lowercase();
+    let container_id = process
+        .container_id
+        .as_deref()
+        .unwrap_or("-")
+        .trim()
+        .to_ascii_lowercase();
+    format!("{exe_path}|{service_unit}|{container_id}")
+}
+
+fn classify_process_trust(process: &TrackedProcess) -> ProcessTrustClass {
+    if is_temp_executable(&process.exe_path) {
+        return ProcessTrustClass::Suspicious;
+    }
+
+    if is_trusted_system_executable(&process.exe_path)
+        && (process_matches_any_command_name(process, TRUSTED_PACKAGE_MANAGED_PATTERNS)
+            || service_unit_matches_any(
+                process.service_unit.as_deref(),
+                TRUSTED_PACKAGE_MANAGED_PATTERNS,
+            ))
+    {
+        return ProcessTrustClass::TrustedPackageManaged;
+    }
+
+    if is_trusted_system_process(process) {
+        return ProcessTrustClass::TrustedSystem;
+    }
+
+    if is_allowed_local_process(process) {
+        return ProcessTrustClass::AllowedLocal;
+    }
+
+    ProcessTrustClass::Unknown
+}
+
+fn is_trusted_system_process(process: &TrackedProcess) -> bool {
+    is_trusted_system_executable(&process.exe_path)
+        && (process.pid == 1
+            || normalize_command_name(&process.process_name) == "systemd"
+            || process
+                .parent_process_name
+                .as_deref()
+                .map(normalize_command_name)
+                .as_deref()
+                == Some("systemd"))
+}
+
+fn is_allowed_local_process(process: &TrackedProcess) -> bool {
+    let exe_path = process.exe_path.trim();
+    LOCAL_EXEC_PREFIXES
+        .iter()
+        .any(|prefix| exe_path.starts_with(prefix))
+        || process.service_unit.is_some()
+        || process.container_id.is_some()
+}
+
+fn is_trusted_system_executable(path: &str) -> bool {
+    let trimmed = path.trim();
+    TRUSTED_SYSTEM_EXEC_PREFIXES
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+}
+
+fn is_temp_executable(path: &str) -> bool {
+    let trimmed = path.trim();
+    trimmed == "/tmp"
+        || trimmed == "/var/tmp"
+        || TEMP_EXEC_PREFIXES
+            .iter()
+            .any(|prefix| trimmed.starts_with(prefix))
+}
+
+fn process_matches_any_command_name(process: &TrackedProcess, patterns: &[&str]) -> bool {
+    matches_any_command_name(
+        [
+            Some(process.process_name.as_str()),
+            path_basename(&process.exe_path),
+            argv0_basename(&process.command_line),
+        ]
+        .into_iter()
+        .flatten(),
+        patterns,
+    )
+}
+
+fn service_unit_matches_any(service_unit: Option<&str>, patterns: &[&str]) -> bool {
+    let Some(service_unit) = service_unit else {
+        return false;
     };
 
+    let normalized = normalize_command_name(service_unit.trim_end_matches(".service"));
+    !normalized.is_empty()
+        && patterns
+            .iter()
+            .map(|pattern| normalize_command_name(pattern))
+            .filter(|pattern| !pattern.is_empty())
+            .any(|pattern| pattern == normalized)
+}
+
+fn matches_any_command_name<'a>(
+    candidates: impl IntoIterator<Item = &'a str>,
+    patterns: &[&str],
+) -> bool {
+    let normalized_patterns = patterns
+        .iter()
+        .map(|pattern| normalize_command_name(pattern))
+        .filter(|pattern| !pattern.is_empty())
+        .collect::<HashSet<_>>();
+
+    candidates.into_iter().any(|candidate| {
+        let normalized = normalize_command_name(candidate);
+        !normalized.is_empty() && normalized_patterns.contains(&normalized)
+    })
+}
+
+fn path_basename(value: &str) -> Option<&str> {
+    Path::new(value)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+}
+
+fn argv0_basename(command_line: &str) -> Option<&str> {
+    let argv0 = command_line.split_whitespace().next()?;
+    path_basename(argv0).or_else(|| (!argv0.is_empty()).then_some(argv0))
+}
+
+fn normalize_command_name(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+fn read_cgroup_metadata(path: PathBuf) -> CgroupMetadata {
+    let Ok(content) = fs::read_to_string(path) else {
+        return CgroupMetadata::default();
+    };
+
+    parse_cgroup_metadata(&content)
+}
+
+fn parse_cgroup_metadata(content: &str) -> CgroupMetadata {
     let mut runtime = None;
     let mut container_id = None;
+    let mut service_unit = None;
 
     for line in content.lines() {
         let lower = line.to_ascii_lowercase();
@@ -359,12 +573,31 @@ fn read_container_context(path: PathBuf) -> (Option<String>, Option<String>) {
             container_id = extract_container_id(line);
         }
 
-        if runtime.is_some() && container_id.is_some() {
+        if service_unit.is_none() {
+            service_unit = extract_service_unit(line);
+        }
+
+        if runtime.is_some() && container_id.is_some() && service_unit.is_some() {
             break;
         }
     }
 
-    (runtime, container_id)
+    CgroupMetadata {
+        service_unit,
+        container_runtime: runtime,
+        container_id,
+    }
+}
+
+fn extract_service_unit(value: &str) -> Option<String> {
+    value.split('/').find_map(|segment| {
+        let trimmed = segment.trim();
+        if trimmed.ends_with(".service") {
+            Some(trimmed.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn extract_container_id(value: &str) -> Option<String> {

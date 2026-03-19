@@ -52,6 +52,9 @@ impl Db {
             "parent_pid": event.parent_pid,
             "uid": event.uid,
             "gid": event.gid,
+            "service_unit": &event.service_unit,
+            "first_seen_at": &event.first_seen_at,
+            "trust_class": &event.trust_class,
             "process_name": &event.process_name,
             "exe_path": &event.exe_path,
             "command_line": &event.command_line,
@@ -163,6 +166,9 @@ impl Db {
                 parent_pid,
                 uid,
                 gid,
+                service_unit,
+                first_seen_at,
+                trust_class,
                 process_name,
                 exe_path,
                 command_line,
@@ -184,7 +190,7 @@ impl Db {
                 level,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(incident_id)
@@ -195,6 +201,9 @@ impl Db {
         .bind(event.parent_pid.map(i64::from))
         .bind(event.uid.map(i64::from))
         .bind(event.gid.map(i64::from))
+        .bind(&event.service_unit)
+        .bind(&event.first_seen_at)
+        .bind(&event.trust_class)
         .bind(&event.process_name)
         .bind(&event.exe_path)
         .bind(&event.command_line)
@@ -236,6 +245,9 @@ impl Db {
                 parent_pid,
                 uid,
                 gid,
+                service_unit,
+                first_seen_at,
+                trust_class,
                 process_name,
                 exe_path,
                 command_line,
@@ -294,6 +306,9 @@ impl Db {
                 parent_pid,
                 uid,
                 gid,
+                service_unit,
+                first_seen_at,
+                trust_class,
                 process_name,
                 exe_path,
                 command_line,
@@ -345,6 +360,9 @@ fn map_behavior_event_row(row: sqlx::sqlite::SqliteRow) -> anyhow::Result<Behavi
         parent_pid: from_i64_opt_u32(row.try_get("parent_pid")?, "behavior_events.parent_pid")?,
         uid: from_i64_opt_u32(row.try_get("uid")?, "behavior_events.uid")?,
         gid: from_i64_opt_u32(row.try_get("gid")?, "behavior_events.gid")?,
+        service_unit: row.try_get("service_unit")?,
+        first_seen_at: row.try_get("first_seen_at")?,
+        trust_class: row.try_get("trust_class")?,
         process_name: row.try_get("process_name")?,
         exe_path: row.try_get("exe_path")?,
         command_line: row.try_get("command_line")?,

@@ -4,7 +4,7 @@ use super::{
     parse_containment_path_list, BehaviorEventDeduper, Cli, Commands, ContainmentConfig,
     HttpProbeResult,
 };
-use crate::ebpf::events::{BehaviorEvent, BehaviorLevel, FileOperationCounts};
+use crate::ebpf::events::{BehaviorEvent, BehaviorLevel, FileOperationCounts, ProcessTrustClass};
 use chrono::Utc;
 use clap::Parser;
 use reqwest::StatusCode;
@@ -102,6 +102,9 @@ fn behavior_event(score: u32, reasons: &[&str]) -> BehaviorEvent {
         parent_pid: Some(1),
         uid: Some(1000),
         gid: Some(1000),
+        service_unit: Some("backup.service".to_string()),
+        first_seen_at: Some(Utc::now()),
+        trust_class: Some(ProcessTrustClass::AllowedLocal),
         process_name: Some("python3".to_string()),
         exe_path: Some("/usr/bin/python3".to_string()),
         command_line: Some("python3 encrypt.py".to_string()),

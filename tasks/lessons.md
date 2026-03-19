@@ -205,6 +205,10 @@
 - Do not stop at explaining `git filter-repo` if the working tree still contains the exposed value in docs, tests, scripts, or task notes.
 - First remove the live occurrences the user can still see in the repo, then handle history rewrite as a second step.
 
+### When a user calls out a warning or caveat, decide whether it is a repo task and track it before moving on
+- Do not leave build warnings or operational caveats only in reply text once the user highlights them as issues to fix.
+- If the warning is actionable in the repo, add it to `tasks/todo.md`, fix it, and only leave truly environment-bound validation as an open verification task.
+
 ### Installer and setup scripts must take operator-specific network values from local config, not repo defaults
 - Do not hard-code live IPs, hostnames, tokens, or deployment-specific paths into install/setup flows when a local `.env` or explicit CLI input is more appropriate.
 - Provide a tracked `.env.example` with placeholders and keep the real `.env` local/ignored so operators can fill in their own values before running the scripts.

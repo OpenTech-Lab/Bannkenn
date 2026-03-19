@@ -1,5 +1,6 @@
 use super::*;
 use crate::config::ContainmentConfig;
+use crate::ebpf::events::ProcessTrustClass;
 use crate::ebpf::events::{
     BehaviorLevel, RAW_BEHAVIOR_EVENT_KIND_FILE_ACTIVITY, RAW_BEHAVIOR_EVENT_KIND_PROCESS_EXEC,
 };
@@ -233,6 +234,9 @@ async fn recent_temp_write_followed_by_exec_emits_trigger_event() {
             parent_pid: Some(1),
             uid: Some(0),
             gid: Some(0),
+            service_unit: Some("cron.service".to_string()),
+            first_seen_at: chrono::Utc::now(),
+            trust_class: ProcessTrustClass::TrustedSystem,
             process_name: "cron".to_string(),
             exe_path: "/tmp/payload".to_string(),
             command_line: "/tmp/payload --run".to_string(),
@@ -291,6 +295,9 @@ async fn ringbuf_exec_events_fall_back_to_tracked_process_exe_path() {
             parent_pid: Some(1),
             uid: Some(0),
             gid: Some(0),
+            service_unit: Some("payload.service".to_string()),
+            first_seen_at: chrono::Utc::now(),
+            trust_class: ProcessTrustClass::AllowedLocal,
             process_name: "payload".to_string(),
             exe_path: "/tmp/payload".to_string(),
             command_line: "/tmp/payload --run".to_string(),

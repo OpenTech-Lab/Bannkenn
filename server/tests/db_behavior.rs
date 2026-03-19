@@ -29,6 +29,15 @@ async fn behavior_events_round_trip_structured_payloads() {
     assert_eq!(rows[0].parent_pid, Some(1));
     assert_eq!(rows[0].uid, Some(1000));
     assert_eq!(rows[0].gid, Some(1000));
+    assert_eq!(rows[0].service_unit.as_deref(), Some("backup.service"));
+    assert_eq!(
+        rows[0].first_seen_at.as_deref(),
+        Some("2026-03-14T08:30:00+00:00")
+    );
+    assert_eq!(
+        rows[0].trust_class.as_deref(),
+        Some("allowed_local_process")
+    );
     assert_eq!(rows[0].parent_process_name.as_deref(), Some("systemd"));
     assert_eq!(rows[0].parent_command_line.as_deref(), Some("systemd"));
     assert_eq!(rows[0].container_runtime.as_deref(), Some("docker"));

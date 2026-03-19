@@ -2,6 +2,7 @@ use crate::config::ContainmentConfig;
 use crate::correlator::CorrelationResult;
 use crate::ebpf::events::{
     BehaviorEvent, BehaviorLevel, FileActivityBatch, FileOperationCounts, ProcessInfo,
+    ProcessTrustClass,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
@@ -292,6 +293,9 @@ impl CompositeBehaviorScorer {
             parent_pid: process.and_then(|proc_info| proc_info.parent_pid),
             uid: process.and_then(|proc_info| proc_info.uid),
             gid: process.and_then(|proc_info| proc_info.gid),
+            service_unit: process.and_then(|proc_info| proc_info.service_unit.clone()),
+            first_seen_at: process.map(|proc_info| proc_info.first_seen_at),
+            trust_class: process.map(|proc_info| proc_info.trust_class),
             process_name: process.map(|proc_info| proc_info.process_name.clone()),
             exe_path: process.map(|proc_info| proc_info.exe_path.clone()),
             command_line: process.map(|proc_info| proc_info.command_line.clone()),
@@ -399,6 +403,9 @@ impl Scorer for CompositeBehaviorScorer {
             parent_pid: process.and_then(|proc_info| proc_info.parent_pid),
             uid: process.and_then(|proc_info| proc_info.uid),
             gid: process.and_then(|proc_info| proc_info.gid),
+            service_unit: process.and_then(|proc_info| proc_info.service_unit.clone()),
+            first_seen_at: process.map(|proc_info| proc_info.first_seen_at),
+            trust_class: process.map(|proc_info| proc_info.trust_class),
             process_name: process.map(|proc_info| proc_info.process_name.clone()),
             exe_path: process.map(|proc_info| proc_info.exe_path.clone()),
             command_line: process.map(|proc_info| proc_info.command_line.clone()),
@@ -507,11 +514,35 @@ fn is_package_manager_helper_activity(process: &ProcessInfo, batch: &FileActivit
 }
 
 fn is_trusted_maintenance_activity(process: &ProcessInfo, batch: &FileActivityBatch) -> bool {
+    let trusted_class = matches!(
+        process.trust_class,
+        ProcessTrustClass::TrustedSystem | ProcessTrustClass::TrustedPackageManaged
+    );
+
     batch_touches_only_paths(batch, MAINTENANCE_PATH_PREFIXES)
-        && process_matches_any_command_name(process, TRUSTED_MAINTENANCE_PATTERNS)
+        && trusted_class
+        && (process_matches_any_command_name(process, TRUSTED_MAINTENANCE_PATTERNS)
+            || service_unit_matches_any(
+                process.service_unit.as_deref(),
+                TRUSTED_MAINTENANCE_PATTERNS,
+            ))
         && is_trusted_system_executable(&process.exe_path)
         && !is_temp_path(&process.exe_path)
         && !has_shell_like_parent(process)
+}
+
+fn service_unit_matches_any(service_unit: Option<&str>, patterns: &[&str]) -> bool {
+    let Some(service_unit) = service_unit else {
+        return false;
+    };
+
+    let normalized = normalize_command_name(service_unit.trim_end_matches(".service"));
+    !normalized.is_empty()
+        && patterns
+            .iter()
+            .map(|pattern| normalize_command_name(pattern))
+            .filter(|pattern| !pattern.is_empty())
+            .any(|pattern| pattern == normalized)
 }
 
 fn is_agent_internal_activity(process: &ProcessInfo, batch: &FileActivityBatch) -> bool {
