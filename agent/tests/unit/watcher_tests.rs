@@ -1,6 +1,6 @@
 use super::{
-    extract_log_line, handle_block_outcome, is_immediate_block_signal, process_failed_attempt,
-    BlockOutcome, RawDetection,
+    extract_log_line, handle_block_outcome, is_immediate_block_signal, next_retry_backoff,
+    process_failed_attempt, BlockOutcome, RateLimitedWarning, RawDetection,
 };
 use crate::burst::BurstDetector;
 use crate::campaign::LocalCampaignTracker;
@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, RwLock};
+use tokio::time::Duration;
 
 #[test]
 fn immediate_block_signal_matches_ssh_close_patterns() {
@@ -71,6 +72,41 @@ fn extract_log_line_unwraps_docker_stderr() {
         result.as_ref(),
         "2026/03/05 02:18:53 [error] 12#0: *1 connect() failed"
     );
+}
+
+#[test]
+fn rate_limited_warning_suppresses_duplicates_until_cooldown_expires() {
+    let mut warning = RateLimitedWarning::new(Duration::from_secs(30));
+    let start = Instant::now();
+
+    assert_eq!(
+        warning.record(start, "first warning"),
+        Some("first warning".to_string())
+    );
+    assert_eq!(
+        warning.record(start + Duration::from_secs(5), "second"),
+        None
+    );
+    assert_eq!(
+        warning.record(start + Duration::from_secs(10), "third"),
+        None
+    );
+    assert_eq!(
+        warning.record(start + Duration::from_secs(31), "after cooldown"),
+        Some("after cooldown (suppressed 2 similar warning(s))".to_string())
+    );
+}
+
+#[test]
+fn retry_backoff_doubles_until_the_cap() {
+    let mut backoff = Duration::from_secs(2);
+    backoff = next_retry_backoff(backoff);
+    assert_eq!(backoff, Duration::from_secs(4));
+    backoff = next_retry_backoff(backoff);
+    assert_eq!(backoff, Duration::from_secs(8));
+
+    let capped = next_retry_backoff(Duration::from_secs(60));
+    assert_eq!(capped, Duration::from_secs(60));
 }
 
 #[tokio::test]

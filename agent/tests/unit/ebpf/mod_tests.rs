@@ -4,6 +4,7 @@ use crate::ebpf::events::{
     BehaviorLevel, RAW_BEHAVIOR_EVENT_KIND_FILE_ACTIVITY, RAW_BEHAVIOR_EVENT_KIND_PROCESS_EXEC,
 };
 use crate::ebpf::lifecycle::{LifecycleSnapshot, TrackedProcess};
+use chrono::Utc;
 
 #[tokio::test]
 async fn simulated_mass_rename_triggers_score_above_suspicious_threshold() {
@@ -73,10 +74,7 @@ fn lifecycle_ring_events_are_translated_without_duplicate_pid_entries() {
     let mut raw = raw;
     raw.process_name[..7].copy_from_slice(b"python3");
 
-    merge_lifecycle_events(
-        &mut events,
-        raw_ring_event_to_lifecycle_event(raw).into_iter(),
-    );
+    merge_lifecycle_events(&mut events, raw_ring_event_to_lifecycle_event(raw));
     assert_eq!(events.len(), 1);
 }
 
@@ -107,6 +105,101 @@ fn file_activity_ring_events_ignore_lifecycle_translation() {
         batch.protected_paths_touched,
         vec!["/srv/data.txt".to_string()]
     );
+}
+
+#[test]
+fn activity_batches_are_coalesced_per_source_and_root() {
+    let root = "/srv".to_string();
+    let batches = vec![
+        FileActivityBatch {
+            timestamp: Utc::now(),
+            source: "aya_ringbuf".to_string(),
+            watched_root: root.clone(),
+            poll_interval_ms: 1000,
+            file_ops: FileOperationCounts {
+                created: 0,
+                modified: 2,
+                renamed: 0,
+                deleted: 0,
+            },
+            touched_paths: vec!["/srv/a.txt".to_string()],
+            protected_paths_touched: vec!["/srv/a.txt".to_string()],
+            bytes_written: 1024,
+            io_rate_bytes_per_sec: 1024,
+        },
+        FileActivityBatch {
+            timestamp: Utc::now(),
+            source: "aya_ringbuf".to_string(),
+            watched_root: root.clone(),
+            poll_interval_ms: 1000,
+            file_ops: FileOperationCounts {
+                created: 1,
+                modified: 1,
+                renamed: 1,
+                deleted: 0,
+            },
+            touched_paths: vec!["/srv/b.txt".to_string(), "/srv/a.txt".to_string()],
+            protected_paths_touched: vec!["/srv/b.txt".to_string()],
+            bytes_written: 2048,
+            io_rate_bytes_per_sec: 2048,
+        },
+    ];
+
+    let merged = coalesce_activity_batches(batches);
+    assert_eq!(merged.len(), 1);
+    let batch = &merged[0];
+    assert_eq!(batch.file_ops.created, 1);
+    assert_eq!(batch.file_ops.modified, 3);
+    assert_eq!(batch.file_ops.renamed, 1);
+    assert_eq!(batch.bytes_written, 3072);
+    assert_eq!(
+        batch.touched_paths,
+        vec!["/srv/a.txt".to_string(), "/srv/b.txt".to_string()]
+    );
+    assert_eq!(
+        batch.protected_paths_touched,
+        vec!["/srv/a.txt".to_string(), "/srv/b.txt".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn userspace_backend_backs_off_when_tree_is_idle() {
+    let root = std::env::temp_dir().join(format!("bannkenn-idle-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let file = root.join("file.txt");
+    fs::write(&file, "hello").unwrap();
+
+    let mut backend = UserspacePollingBackend {
+        poll_interval_ms: 1000,
+        roots: vec![PollingRootState {
+            root: root.clone(),
+            previous: None,
+            idle_scan_streak: 0,
+            skip_polls_remaining: 0,
+        }],
+    };
+
+    assert!(backend.poll_batches(&[]).await.unwrap().batches.is_empty());
+    assert_eq!(backend.roots[0].idle_scan_streak, 0);
+    assert_eq!(backend.roots[0].skip_polls_remaining, 0);
+
+    assert!(backend.poll_batches(&[]).await.unwrap().batches.is_empty());
+    assert_eq!(backend.roots[0].idle_scan_streak, 1);
+    assert_eq!(backend.roots[0].skip_polls_remaining, 1);
+
+    assert!(backend.poll_batches(&[]).await.unwrap().batches.is_empty());
+    assert_eq!(
+        backend.roots[0].skip_polls_remaining, 0,
+        "third poll should be skipped instead of rescanning the tree"
+    );
+
+    fs::write(&file, "hello-again").unwrap();
+    let result = backend.poll_batches(&[]).await.unwrap();
+    assert_eq!(result.batches.len(), 1);
+    assert_eq!(backend.roots[0].idle_scan_streak, 0);
+    assert_eq!(backend.roots[0].skip_polls_remaining, 0);
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[tokio::test]

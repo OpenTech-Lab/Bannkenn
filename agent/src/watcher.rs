@@ -14,12 +14,19 @@ use crate::shared_risk::SharedRiskSnapshot;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{sleep, Duration};
+
+const TAIL_POLL_INTERVAL_MS: u64 = 200;
+const TAIL_ROTATION_CHECK_IDLE_POLLS: u32 = 5;
+const LOG_OPEN_INITIAL_BACKOFF_SECS: u64 = 2;
+const LOG_OPEN_MAX_BACKOFF_SECS: u64 = 60;
+const LOG_WARNING_COOLDOWN_SECS: u64 = 60;
 
 #[derive(Debug, Clone)]
 struct RawDetection {
@@ -34,6 +41,50 @@ struct RawSshLogin {
     ip: String,
     username: String,
     log_path: String,
+}
+
+#[derive(Debug, Clone)]
+struct RateLimitedWarning {
+    cooldown: Duration,
+    last_emitted: Option<Instant>,
+    suppressed: u32,
+}
+
+impl RateLimitedWarning {
+    fn new(cooldown: Duration) -> Self {
+        Self {
+            cooldown,
+            last_emitted: None,
+            suppressed: 0,
+        }
+    }
+
+    fn record(&mut self, now: Instant, message: impl Into<String>) -> Option<String> {
+        if let Some(last_emitted) = self.last_emitted {
+            if now.duration_since(last_emitted) < self.cooldown {
+                self.suppressed = self.suppressed.saturating_add(1);
+                return None;
+            }
+        }
+
+        let message = message.into();
+        let rendered = if self.suppressed == 0 {
+            message
+        } else {
+            format!(
+                "{} (suppressed {} similar warning(s))",
+                message, self.suppressed
+            )
+        };
+        self.last_emitted = Some(now);
+        self.suppressed = 0;
+        Some(rendered)
+    }
+
+    fn reset(&mut self) {
+        self.last_emitted = None;
+        self.suppressed = 0;
+    }
 }
 
 /// A risk event generated for every matched log line.
@@ -187,33 +238,57 @@ async fn tail_log_path(
 ) -> Result<()> {
     let patterns = all_patterns()?;
     let ssh_login_patterns = all_ssh_login_patterns()?;
-    let poll_interval = Duration::from_millis(200);
+    let poll_interval = Duration::from_millis(TAIL_POLL_INTERVAL_MS);
+    let warning_cooldown = Duration::from_secs(LOG_WARNING_COOLDOWN_SECS);
+    let mut open_warning = RateLimitedWarning::new(warning_cooldown);
+    let mut read_warning = RateLimitedWarning::new(warning_cooldown);
+    let mut reopen_warning = RateLimitedWarning::new(warning_cooldown);
+    let mut open_backoff = Duration::from_secs(LOG_OPEN_INITIAL_BACKOFF_SECS);
 
     loop {
         let mut file = match open_log_at_end(&log_path).await {
-            Ok(file) => file,
+            Ok(file) => {
+                open_warning.reset();
+                read_warning.reset();
+                reopen_warning.reset();
+                open_backoff = Duration::from_secs(LOG_OPEN_INITIAL_BACKOFF_SECS);
+                file
+            }
             Err(err) => {
-                tracing::warn!("Failed to open {}: {}", log_path, err);
-                sleep(Duration::from_secs(2)).await;
+                let message = missing_log_warning_message(&log_path, &err, open_backoff);
+                emit_rate_limited_warning(&mut open_warning, message);
+                sleep(open_backoff).await;
+                open_backoff = next_retry_backoff(open_backoff);
                 continue;
             }
         };
 
         let mut file_pos = file.seek(std::io::SeekFrom::Current(0)).await?;
         let mut buffer = String::new();
+        let mut idle_polls = 0u32;
 
         loop {
-            if let Ok(meta) = tokio::fs::metadata(&log_path).await {
-                if meta.len() < file_pos {
-                    tracing::info!("Log rotation detected, reopening {}", log_path);
-                    match open_log_from_start(&log_path).await {
-                        Ok(new_file) => {
-                            file = new_file;
-                            file_pos = 0;
-                        }
-                        Err(err) => {
-                            tracing::warn!("Failed to reopen {} after rotation: {}", log_path, err);
-                            break;
+            if idle_polls.is_multiple_of(TAIL_ROTATION_CHECK_IDLE_POLLS) {
+                if let Ok(meta) = tokio::fs::metadata(&log_path).await {
+                    if meta.len() < file_pos {
+                        tracing::info!("Log rotation detected, reopening {}", log_path);
+                        match open_log_from_start(&log_path).await {
+                            Ok(new_file) => {
+                                file = new_file;
+                                file_pos = 0;
+                                reopen_warning.reset();
+                                idle_polls = 0;
+                            }
+                            Err(err) => {
+                                emit_rate_limited_warning(
+                                    &mut reopen_warning,
+                                    format!(
+                                        "Failed to reopen {} after rotation: {}",
+                                        log_path, err
+                                    ),
+                                );
+                                break;
+                            }
                         }
                     }
                 }
@@ -222,10 +297,12 @@ async fn tail_log_path(
             buffer.clear();
             match file.read_to_string(&mut buffer).await {
                 Ok(0) => {
+                    idle_polls = idle_polls.saturating_add(1);
                     sleep(poll_interval).await;
                     continue;
                 }
                 Ok(_) => {
+                    idle_polls = 0;
                     file_pos = file.seek(std::io::SeekFrom::Current(0)).await?;
 
                     for line in buffer.lines() {
@@ -273,14 +350,73 @@ async fn tail_log_path(
                     }
                 }
                 Err(err) => {
-                    tracing::warn!("Error reading {}: {}", log_path, err);
+                    emit_rate_limited_warning(
+                        &mut read_warning,
+                        format!("Error reading {}: {}", log_path, err),
+                    );
                     break;
                 }
             }
         }
 
-        sleep(Duration::from_secs(1)).await;
+        sleep(open_backoff).await;
+        open_backoff = next_retry_backoff(open_backoff);
     }
+}
+
+fn emit_rate_limited_warning(limiter: &mut RateLimitedWarning, message: String) {
+    if let Some(rendered) = limiter.record(Instant::now(), message) {
+        tracing::warn!("{}", rendered);
+    }
+}
+
+fn missing_log_warning_message(
+    log_path: &str,
+    error: &anyhow::Error,
+    retry_delay: Duration,
+) -> String {
+    let retry_secs = retry_delay.as_secs().max(1);
+    if should_hint_journald(log_path, error) {
+        format!(
+            "Failed to open {}: {}. journald appears to be available, so file polling will back off for {}s until the path exists",
+            log_path, error, retry_secs
+        )
+    } else {
+        format!(
+            "Failed to open {}: {}. Backing off file polling for {}s",
+            log_path, error, retry_secs
+        )
+    }
+}
+
+fn should_hint_journald(log_path: &str, error: &anyhow::Error) -> bool {
+    matches!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind),
+        Some(std::io::ErrorKind::NotFound)
+    ) && is_legacy_auth_log_path(log_path)
+        && journald_is_available()
+}
+
+fn is_legacy_auth_log_path(log_path: &str) -> bool {
+    matches!(
+        log_path,
+        "/var/log/auth.log" | "/var/log/secure" | "/var/log/syslog" | "/var/log/messages"
+    )
+}
+
+fn journald_is_available() -> bool {
+    Path::new("/run/systemd/journal/socket").exists() || Path::new("/var/log/journal").is_dir()
+}
+
+fn next_retry_backoff(current: Duration) -> Duration {
+    let current_secs = current.as_secs().max(1);
+    Duration::from_secs(
+        current_secs
+            .saturating_mul(2)
+            .min(LOG_OPEN_MAX_BACKOFF_SECS),
+    )
 }
 
 /// Convert an internal source identifier to a human-readable feed/database name.

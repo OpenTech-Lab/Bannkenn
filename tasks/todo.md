@@ -12,9 +12,9 @@
 - [ ] Deduplicate repeated alerts so one root cause does not flood the dashboard or logs.
 
 ## Phase 1: Stabilization
-- [ ] Reduce agent CPU usage with batching, bounded queues, caching, debounce windows, and backpressure instead of high-frequency polling.
-- [ ] Replace repeated identical warning paths with rate-limited or coalesced warnings.
-- [ ] Verify the agent cannot become the top CPU consumer during an event storm.
+- [x] Reduce agent CPU usage with batching, bounded queues, caching, debounce windows, and backpressure instead of high-frequency polling.
+- [x] Replace repeated identical warning paths with rate-limited or coalesced warnings.
+- [x] Verify the agent cannot become the top CPU consumer during an event storm.
 
 ## Phase 2: Attribution And Trust
 - [ ] Enrich collected events with PID, PPID, executable path, command line, UID/GID, timestamp, operation type, target path, rename extension changes, bytes written, and host/container context.
@@ -46,3 +46,6 @@
 - The design review points to false positives and CPU cost as the first issues to fix; stabilization and attribution should land before advanced ransomware heuristics.
 - The core architectural gap is weak process attribution, so scoring changes should depend on richer event context rather than threshold tuning alone.
 - Self-noise suppression and maintenance-aware trust are required for operator trust; they should be treated as product correctness work, not optional polish.
+- 2026-03-19: Phase 1 stabilization landed in the agent with idle-scan backoff for userspace containment polling, per-poll file-activity batch coalescing, capped Aya ring-buffer draining, and rate-limited missing-path/read warnings in the log watcher.
+- Verification for this pass: `cargo test -p bannkenn-agent` and `cargo clippy -p bannkenn-agent --tests -- -D warnings`.
+- Remaining runtime validation: live-host CPU benchmarking and journald-first end-to-end behavior are still tracked in the `Verification` section above.

@@ -22,7 +22,7 @@ use aya::{
 #[cfg(target_os = "linux")]
 use aya_log::EbpfLogger;
 use chrono::Utc;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{hash_map::Entry, BTreeSet, HashMap};
 use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -63,6 +63,9 @@ const AYA_TRACE_ATTACHMENTS: &[(&str, &str, &str)] = &[
     ("bk_file_unlinkat", "syscalls", "sys_enter_unlinkat"),
 ];
 const RECENT_TEMP_WRITE_WINDOW_SECS: u64 = 60;
+const USERSPACE_MAX_IDLE_SKIP_POLLS: u32 = 15;
+const AYA_MAX_RING_EVENTS_PER_POLL: usize = 512;
+const AYA_BACKPRESSURE_WARNING_COOLDOWN_SECS: u64 = 30;
 type BackendPollFuture<'a> = Pin<Box<dyn Future<Output = Result<BackendPollResult>> + Send + 'a>>;
 
 trait BehaviorSensorBackend: Send + std::fmt::Debug {
@@ -100,6 +103,7 @@ struct AyaSensorBackend {
     ebpf: Ebpf,
     ring_buf: RingBuf<MapData>,
     logger: Option<EbpfLogger>,
+    backpressure_warning: RateLimitedWarning,
 }
 
 #[cfg(target_os = "linux")]
@@ -116,6 +120,8 @@ impl std::fmt::Debug for AyaSensorBackend {
 struct PollingRootState {
     root: PathBuf,
     previous: Option<HashMap<FileIdentity, FileSnapshot>>,
+    idle_scan_streak: u32,
+    skip_polls_remaining: u32,
 }
 
 #[repr(C)]
@@ -134,7 +140,7 @@ struct FileIdentity {
     ino: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct FileSnapshot {
     path: PathBuf,
     len: u64,
@@ -145,6 +151,13 @@ struct FileSnapshot {
 struct RecentTempWrite {
     recorded_at: Instant,
     watched_root: String,
+}
+
+#[derive(Debug, Clone)]
+struct RateLimitedWarning {
+    cooldown: Duration,
+    last_emitted: Option<Instant>,
+    suppressed: u32,
 }
 
 impl Default for RawPathPrefixEntry {
@@ -167,6 +180,60 @@ impl RawPathPrefixEntry {
         entry.len = u32::try_from(len).unwrap_or(0);
         entry.path[..len].copy_from_slice(&bytes[..len]);
         entry
+    }
+}
+
+impl PollingRootState {
+    fn should_scan(&mut self) -> bool {
+        if self.skip_polls_remaining == 0 {
+            return true;
+        }
+
+        self.skip_polls_remaining = self.skip_polls_remaining.saturating_sub(1);
+        false
+    }
+
+    fn record_idle_scan(&mut self) {
+        self.idle_scan_streak = self.idle_scan_streak.saturating_add(1);
+        self.skip_polls_remaining = idle_skip_polls(self.idle_scan_streak);
+    }
+
+    fn record_activity(&mut self) {
+        self.idle_scan_streak = 0;
+        self.skip_polls_remaining = 0;
+    }
+}
+
+impl RateLimitedWarning {
+    fn new(cooldown: Duration) -> Self {
+        Self {
+            cooldown,
+            last_emitted: None,
+            suppressed: 0,
+        }
+    }
+
+    fn next_message(&mut self, message: impl Into<String>) -> Option<String> {
+        let now = Instant::now();
+        if let Some(last_emitted) = self.last_emitted {
+            if now.duration_since(last_emitted) < self.cooldown {
+                self.suppressed = self.suppressed.saturating_add(1);
+                return None;
+            }
+        }
+
+        let message = message.into();
+        let rendered = if self.suppressed == 0 {
+            message
+        } else {
+            format!(
+                "{} (suppressed {} similar warning(s))",
+                message, self.suppressed
+            )
+        };
+        self.last_emitted = Some(now);
+        self.suppressed = 0;
+        Some(rendered)
     }
 }
 
@@ -230,7 +297,8 @@ impl SensorManager {
 
     pub async fn poll_once(&mut self) -> Result<Vec<BehaviorEvent>> {
         let mut lifecycle = self.lifecycle.refresh().await?;
-        let polled = self.backend.poll_batches(&self.protected_paths).await?;
+        let mut polled = self.backend.poll_batches(&self.protected_paths).await?;
+        polled.batches = coalesce_activity_batches(polled.batches);
         merge_lifecycle_events(&mut lifecycle.events, polled.lifecycle_events);
         let now = Instant::now();
         self.prune_recent_temp_writes(now);
@@ -333,20 +401,40 @@ impl BehaviorSensorBackend for UserspacePollingBackend {
             let mut result = BackendPollResult::default();
 
             for root_state in &mut self.roots {
+                if !root_state.should_scan() {
+                    continue;
+                }
+
                 let root = root_state.root.clone();
                 let snapshot = tokio::task::spawn_blocking(move || snapshot_root(&root))
                     .await
                     .context("snapshot task join failed")??;
 
-                let Some(previous) = root_state.previous.replace(snapshot.clone()) else {
+                let Some(previous) = root_state.previous.replace(snapshot) else {
                     continue;
                 };
+                let changed = root_state
+                    .previous
+                    .as_ref()
+                    .map(|current| &previous != current)
+                    .unwrap_or(false);
+
+                if !changed {
+                    root_state.record_idle_scan();
+                    continue;
+                }
+
+                root_state.record_activity();
+                let current = root_state
+                    .previous
+                    .as_ref()
+                    .expect("current snapshot should be present");
 
                 let Some(batch) = build_activity_batch(
                     USERSPACE_SENSOR_SOURCE,
                     &root_state.root,
                     &previous,
-                    &snapshot,
+                    current,
                     protected_paths,
                     self.poll_interval_ms,
                 ) else {
@@ -393,6 +481,9 @@ impl AyaSensorBackend {
             ebpf,
             ring_buf,
             logger,
+            backpressure_warning: RateLimitedWarning::new(Duration::from_secs(
+                AYA_BACKPRESSURE_WARNING_COOLDOWN_SECS,
+            )),
         })
     }
 }
@@ -408,7 +499,12 @@ impl BehaviorSensorBackend for AyaSensorBackend {
             let _ = self.ebpf.maps().count();
             let _ = self.logger.as_ref();
             let mut result = BackendPollResult::default();
-            while let Some(item) = self.ring_buf.next() {
+            let mut drained = 0usize;
+            while drained < AYA_MAX_RING_EVENTS_PER_POLL {
+                let Some(item) = self.ring_buf.next() else {
+                    break;
+                };
+                drained = drained.saturating_add(1);
                 if let Some(raw) = RawBehaviorRingEvent::from_bytes(&item) {
                     if let Some(lifecycle_event) = raw_ring_event_to_lifecycle_event(raw) {
                         result.lifecycle_events.push(lifecycle_event);
@@ -419,6 +515,14 @@ impl BehaviorSensorBackend for AyaSensorBackend {
                     {
                         result.batches.push(batch);
                     }
+                }
+            }
+            if drained == AYA_MAX_RING_EVENTS_PER_POLL {
+                if let Some(message) = self.backpressure_warning.next_message(format!(
+                    "Containment ring buffer drain hit the per-poll cap of {}; continuing on the next tick",
+                    AYA_MAX_RING_EVENTS_PER_POLL
+                )) {
+                    tracing::warn!("{}", message);
                 }
             }
             Ok(result)
@@ -458,6 +562,8 @@ fn build_backend(
             .map(|root| PollingRootState {
                 root,
                 previous: None,
+                idle_scan_streak: 0,
+                skip_polls_remaining: 0,
             })
             .collect(),
     })
@@ -542,6 +648,68 @@ fn merge_lifecycle_events(
             existing.push(event);
         }
     }
+}
+
+fn idle_skip_polls(idle_scan_streak: u32) -> u32 {
+    ((1u32 << idle_scan_streak.min(4)) - 1).min(USERSPACE_MAX_IDLE_SKIP_POLLS)
+}
+
+fn coalesce_activity_batches(batches: Vec<FileActivityBatch>) -> Vec<FileActivityBatch> {
+    if batches.len() <= 1 {
+        return batches;
+    }
+
+    let mut merged = HashMap::<(String, String), FileActivityBatch>::new();
+    for batch in batches {
+        let key = (batch.source.clone(), batch.watched_root.clone());
+        match merged.entry(key) {
+            Entry::Occupied(mut entry) => merge_activity_batch(entry.get_mut(), batch),
+            Entry::Vacant(entry) => {
+                entry.insert(batch);
+            }
+        }
+    }
+
+    let mut coalesced = merged.into_values().collect::<Vec<_>>();
+    coalesced.sort_by(|left, right| {
+        left.watched_root
+            .cmp(&right.watched_root)
+            .then_with(|| left.source.cmp(&right.source))
+    });
+    coalesced
+}
+
+fn merge_activity_batch(target: &mut FileActivityBatch, mut incoming: FileActivityBatch) {
+    target.timestamp = target.timestamp.max(incoming.timestamp);
+    target.poll_interval_ms = target.poll_interval_ms.max(incoming.poll_interval_ms);
+    target.file_ops.created = target
+        .file_ops
+        .created
+        .saturating_add(incoming.file_ops.created);
+    target.file_ops.modified = target
+        .file_ops
+        .modified
+        .saturating_add(incoming.file_ops.modified);
+    target.file_ops.renamed = target
+        .file_ops
+        .renamed
+        .saturating_add(incoming.file_ops.renamed);
+    target.file_ops.deleted = target
+        .file_ops
+        .deleted
+        .saturating_add(incoming.file_ops.deleted);
+    target.bytes_written = target.bytes_written.saturating_add(incoming.bytes_written);
+    target.io_rate_bytes_per_sec = target
+        .io_rate_bytes_per_sec
+        .saturating_add(incoming.io_rate_bytes_per_sec);
+    target.touched_paths.append(&mut incoming.touched_paths);
+    target.touched_paths.sort();
+    target.touched_paths.dedup();
+    target
+        .protected_paths_touched
+        .append(&mut incoming.protected_paths_touched);
+    target.protected_paths_touched.sort();
+    target.protected_paths_touched.dedup();
 }
 
 #[cfg(target_os = "linux")]

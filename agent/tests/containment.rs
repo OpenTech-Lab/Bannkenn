@@ -58,9 +58,11 @@ fn action(
 
 #[test]
 fn suspicious_and_throttle_events_escalate_state() {
-    let mut config = ContainmentConfig::default();
-    config.enabled = true;
-    config.throttle_enabled = true;
+    let config = ContainmentConfig {
+        enabled: true,
+        throttle_enabled: true,
+        ..ContainmentConfig::default()
+    };
     let start = Utc::now();
     let mut coordinator = ContainmentCoordinator::new(&config);
 
@@ -90,11 +92,13 @@ fn suspicious_and_throttle_events_escalate_state() {
 
 #[test]
 fn fuse_decay_waits_for_rate_limit_then_releases_to_throttle() {
-    let mut config = ContainmentConfig::default();
-    config.enabled = true;
-    config.throttle_enabled = true;
-    config.fuse_enabled = true;
-    config.auto_fuse_release_min = 0;
+    let config = ContainmentConfig {
+        enabled: true,
+        throttle_enabled: true,
+        fuse_enabled: true,
+        auto_fuse_release_min: 0,
+        ..ContainmentConfig::default()
+    };
     let start = Utc::now();
     let mut coordinator = ContainmentCoordinator::new(&config);
 
@@ -128,8 +132,10 @@ fn fuse_decay_waits_for_rate_limit_then_releases_to_throttle() {
 
 #[test]
 fn repeated_same_level_events_do_not_retransition() {
-    let mut config = ContainmentConfig::default();
-    config.enabled = true;
+    let config = ContainmentConfig {
+        enabled: true,
+        ..ContainmentConfig::default()
+    };
     let start = Utc::now();
     let mut coordinator = ContainmentCoordinator::new(&config);
 
@@ -148,10 +154,12 @@ fn repeated_same_level_events_do_not_retransition() {
 
 #[test]
 fn manual_fuse_trigger_bypasses_rate_limit_and_moves_to_fuse() {
-    let mut config = ContainmentConfig::default();
-    config.enabled = true;
-    config.throttle_enabled = true;
-    config.fuse_enabled = true;
+    let config = ContainmentConfig {
+        enabled: true,
+        throttle_enabled: true,
+        fuse_enabled: true,
+        ..ContainmentConfig::default()
+    };
     let start = Utc::now();
     let mut coordinator = ContainmentCoordinator::new(&config);
 
@@ -180,10 +188,12 @@ fn manual_fuse_trigger_bypasses_rate_limit_and_moves_to_fuse() {
 
 #[test]
 fn manual_fuse_release_returns_to_throttle_when_enabled() {
-    let mut config = ContainmentConfig::default();
-    config.enabled = true;
-    config.throttle_enabled = true;
-    config.fuse_enabled = true;
+    let config = ContainmentConfig {
+        enabled: true,
+        throttle_enabled: true,
+        fuse_enabled: true,
+        ..ContainmentConfig::default()
+    };
     let start = Utc::now();
     let mut coordinator = ContainmentCoordinator::new(&config);
 
