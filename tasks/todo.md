@@ -1,5 +1,24 @@
 # tasks
 
+## Done: Move `agent` test code under `agent/tests`
+
+### Scope
+- [x] Audit the current partial test relocation state in `agent/src`
+- [x] Move the remaining inline test modules under `agent/tests/unit`
+- [x] Keep `agent/src` modules wired to external test files with `#[path = ...]`
+- [x] Re-run formatting, clippy, and workspace tests after the refactor
+
+### Notes
+- Goal: keep unit-test visibility and behavior unchanged while physically storing test code under `agent/tests`.
+- The earlier bulk move already relocated most `agent/src` test modules; the remaining inline modules are the pattern detectors under `agent/src/patterns/`.
+
+### Review
+- Moved the remaining `agent/src/patterns/*.rs` inline `mod tests` blocks into `agent/tests/unit/patterns/*_tests.rs`.
+- Removed the last test-only helper from `agent/src/enforcement/cgroup.rs` and defined it in `agent/tests/unit/enforcement/cgroup_tests.rs` so `agent/src` only keeps `#[cfg(test)] #[path = ...] mod tests;` stubs.
+- Verification: `cargo fmt --all` passed.
+- Verification: `cargo clippy --workspace -- -D warnings` passed.
+- Verification: `cargo test --workspace` passed.
+
 ## Done: Malware-specific trigger follow-up from 15.6 review
 
 ### Scope
