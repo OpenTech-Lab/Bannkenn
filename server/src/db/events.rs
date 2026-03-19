@@ -354,6 +354,15 @@ impl Db {
         source: &str,
         limit: i64,
     ) -> anyhow::Result<Vec<DecisionRow>> {
+        self.list_decisions_by_source_page(source, limit, 0).await
+    }
+
+    pub async fn list_decisions_by_source_page(
+        &self,
+        source: &str,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<DecisionRow>> {
         let rows = sqlx::query_as::<
             _,
             (
@@ -368,10 +377,11 @@ impl Db {
                 Option<String>,
             ),
         >(
-            "SELECT id, ip, reason, action, source, country, asn_org, created_at, expires_at FROM decisions WHERE source = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+            "SELECT id, ip, reason, action, source, country, asn_org, created_at, expires_at FROM decisions WHERE source = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
         )
         .bind(source)
         .bind(limit)
+        .bind(offset)
         .fetch_all(&self.0)
         .await?;
 
@@ -400,6 +410,15 @@ impl Db {
         source: &str,
         limit: i64,
     ) -> anyhow::Result<Vec<TelemetryRow>> {
+        self.list_telemetry_by_source_page(source, limit, 0).await
+    }
+
+    pub async fn list_telemetry_by_source_page(
+        &self,
+        source: &str,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<TelemetryRow>> {
         let rows = sqlx::query_as::<
             _,
             (
@@ -414,10 +433,11 @@ impl Db {
                 String,
             ),
         >(
-            "SELECT id, ip, reason, level, source, log_path, country, asn_org, created_at FROM telemetry_events WHERE source = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+            "SELECT id, ip, reason, level, source, log_path, country, asn_org, created_at FROM telemetry_events WHERE source = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
         )
         .bind(source)
         .bind(limit)
+        .bind(offset)
         .fetch_all(&self.0)
         .await?;
 

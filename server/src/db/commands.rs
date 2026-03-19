@@ -46,6 +46,16 @@ impl Db {
         agent_name: &str,
         limit: i64,
     ) -> anyhow::Result<Vec<ContainmentActionRow>> {
+        self.list_containment_actions_by_agent_page(agent_name, limit, 0)
+            .await
+    }
+
+    pub async fn list_containment_actions_by_agent_page(
+        &self,
+        agent_name: &str,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<ContainmentActionRow>> {
         let rows = sqlx::query(
             r#"
             SELECT
@@ -66,10 +76,12 @@ impl Db {
             WHERE agent_name = ?
             ORDER BY created_at DESC, id DESC
             LIMIT ?
+            OFFSET ?
             "#,
         )
         .bind(agent_name)
         .bind(limit)
+        .bind(offset)
         .fetch_all(&self.0)
         .await?;
 

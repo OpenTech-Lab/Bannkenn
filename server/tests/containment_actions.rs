@@ -115,3 +115,30 @@ async fn containment_action_handlers_reject_invalid_values() {
     .expect("invalid acknowledgement statuses should be rejected");
     assert_eq!(ack_err, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn containment_action_history_pages_support_offsets() {
+    let db = test_db().await;
+
+    db.insert_agent("agent-a", "token-a", None).await.unwrap();
+    for reason in ["oldest", "middle", "newest"] {
+        db.create_containment_action(&NewContainmentAction {
+            agent_name: "agent-a".to_string(),
+            command_kind: "trigger_fuse".to_string(),
+            reason: reason.to_string(),
+            watched_root: Some("/srv/data".to_string()),
+            pid: Some(42),
+            requested_by: "dashboard".to_string(),
+        })
+        .await
+        .unwrap();
+    }
+
+    let page = db
+        .list_containment_actions_by_agent_page("agent-a", 2, 1)
+        .await
+        .unwrap();
+    assert_eq!(page.len(), 2);
+    assert_eq!(page[0].reason, "middle");
+    assert_eq!(page[1].reason, "oldest");
+}

@@ -57,21 +57,47 @@ pub struct UpdateAgentRequest {
 #[derive(Debug, Deserialize)]
 pub struct AgentDecisionsParams {
     pub limit: Option<i64>,
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct AgentTelemetryParams {
     pub limit: Option<i64>,
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct AgentBehaviorEventsParams {
     pub limit: Option<i64>,
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct AgentContainmentParams {
     pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PaginatedResponse<T> {
+    pub items: Vec<T>,
+    pub limit: i64,
+    pub offset: i64,
+    pub has_more: bool,
+}
+
+fn paginated_response<T>(mut items: Vec<T>, limit: i64, offset: i64) -> PaginatedResponse<T> {
+    let has_more = items.len() as i64 > limit;
+    if has_more {
+        items.truncate(limit as usize);
+    }
+
+    PaginatedResponse {
+        items,
+        limit,
+        offset,
+        has_more,
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -223,6 +249,7 @@ pub async fn list_decisions(
     Query(params): Query<AgentDecisionsParams>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let limit = params.limit.unwrap_or(500).clamp(1, 2000);
+    let offset = params.offset.unwrap_or(0).max(0);
     let Some(agent_name) = state
         .db
         .get_agent_name_by_id(id)
@@ -234,11 +261,11 @@ pub async fn list_decisions(
 
     let decisions = state
         .db
-        .list_decisions_by_source(&agent_name, limit)
+        .list_decisions_by_source_page(&agent_name, limit.saturating_add(1), offset)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok(Json(decisions))
+    Ok(Json(paginated_response(decisions, limit, offset)))
 }
 
 pub async fn list_telemetry(
@@ -247,6 +274,7 @@ pub async fn list_telemetry(
     Query(params): Query<AgentTelemetryParams>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let limit = params.limit.unwrap_or(2000).clamp(1, 10000);
+    let offset = params.offset.unwrap_or(0).max(0);
     let Some(agent_name) = state
         .db
         .get_agent_name_by_id(id)
@@ -258,11 +286,11 @@ pub async fn list_telemetry(
 
     let telemetry = state
         .db
-        .list_telemetry_by_source(&agent_name, limit)
+        .list_telemetry_by_source_page(&agent_name, limit.saturating_add(1), offset)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok(Json(telemetry))
+    Ok(Json(paginated_response(telemetry, limit, offset)))
 }
 
 pub async fn list_behavior_events(
@@ -271,6 +299,7 @@ pub async fn list_behavior_events(
     Query(params): Query<AgentBehaviorEventsParams>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let limit = params.limit.unwrap_or(1000).clamp(1, 5000);
+    let offset = params.offset.unwrap_or(0).max(0);
     let Some(agent_name) = state
         .db
         .get_agent_name_by_id(id)
@@ -282,11 +311,11 @@ pub async fn list_behavior_events(
 
     let behavior_events = state
         .db
-        .list_behavior_events_by_agent(&agent_name, limit)
+        .list_behavior_events_by_agent_page(&agent_name, limit.saturating_add(1), offset)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok(Json(behavior_events))
+    Ok(Json(paginated_response(behavior_events, limit, offset)))
 }
 
 pub async fn list_containment(
@@ -295,6 +324,7 @@ pub async fn list_containment(
     Query(params): Query<AgentContainmentParams>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let limit = params.limit.unwrap_or(500).clamp(1, 2000);
+    let offset = params.offset.unwrap_or(0).max(0);
     let Some(agent_name) = state
         .db
         .get_agent_name_by_id(id)
@@ -306,11 +336,11 @@ pub async fn list_containment(
 
     let containment_events = state
         .db
-        .list_containment_events_by_agent(&agent_name, limit)
+        .list_containment_events_by_agent_page(&agent_name, limit.saturating_add(1), offset)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok(Json(containment_events))
+    Ok(Json(paginated_response(containment_events, limit, offset)))
 }
 
 pub async fn backfill_geoip(

@@ -13,6 +13,7 @@ import {
   IncidentDetail,
   IncidentDetailSnapshot,
   AdminAlert,
+  PaginatedResult,
   TelemetryEvent,
 } from '@/src/features/monitoring/types';
 
@@ -61,25 +62,83 @@ export async function fetchDashboardSnapshot(): Promise<DashboardSnapshot> {
 }
 
 export async function fetchAgentDetailSnapshot(agentId: string): Promise<AgentDetailSnapshot> {
-  const [agent, behaviorEvents, containmentEvents, containmentActions, incidents, telemetryEvents, decisions] = await Promise.all([
-    readJson<AgentStatus>(`/api/agents/${agentId}`),
-    readJson<BehaviorEvent[]>(`/api/agents/${agentId}/behavior-events?limit=120`),
-    readJson<ContainmentEvent[]>(`/api/agents/${agentId}/containment?limit=120`),
-    readJson<ContainmentAction[]>(`/api/agents/${agentId}/containment-actions?limit=120`),
-    readJson<Incident[]>('/api/incidents?limit=120'),
-    readJson<TelemetryEvent[]>(`/api/agents/${agentId}/telemetry?limit=200`),
-    readJson<Decision[]>(`/api/agents/${agentId}/decisions?limit=200`),
-  ]);
-
-  return {
+  const [
     agent,
     behaviorEvents,
     containmentEvents,
     containmentActions,
-    relatedIncidents: incidents.filter((incident) => incident.affected_agents.includes(agent.name)),
+    incidents,
     telemetryEvents,
     decisions,
+  ] = await Promise.all([
+    readJson<AgentStatus>(`/api/agents/${agentId}`),
+    fetchAgentBehaviorEventsPage(agentId, 120, 0),
+    fetchAgentContainmentEventsPage(agentId, 120, 0),
+    fetchAgentContainmentActionsPage(agentId, 120, 0),
+    readJson<Incident[]>('/api/incidents?limit=120'),
+    fetchAgentTelemetryEventsPage(agentId, 200, 0),
+    fetchAgentDecisionsPage(agentId, 200, 0),
+  ]);
+
+  return {
+    agent,
+    behaviorEvents: behaviorEvents.items,
+    containmentEvents: containmentEvents.items,
+    containmentActions: containmentActions.items,
+    relatedIncidents: incidents.filter((incident) => incident.affected_agents.includes(agent.name)),
+    telemetryEvents: telemetryEvents.items,
+    decisions: decisions.items,
   };
+}
+
+export async function fetchAgentBehaviorEventsPage(
+  agentId: string,
+  limit: number,
+  offset: number
+): Promise<PaginatedResult<BehaviorEvent>> {
+  return readJson<PaginatedResult<BehaviorEvent>>(
+    `/api/agents/${agentId}/behavior-events?limit=${limit}&offset=${offset}`
+  );
+}
+
+export async function fetchAgentContainmentEventsPage(
+  agentId: string,
+  limit: number,
+  offset: number
+): Promise<PaginatedResult<ContainmentEvent>> {
+  return readJson<PaginatedResult<ContainmentEvent>>(
+    `/api/agents/${agentId}/containment?limit=${limit}&offset=${offset}`
+  );
+}
+
+export async function fetchAgentContainmentActionsPage(
+  agentId: string,
+  limit: number,
+  offset: number
+): Promise<PaginatedResult<ContainmentAction>> {
+  return readJson<PaginatedResult<ContainmentAction>>(
+    `/api/agents/${agentId}/containment-actions?limit=${limit}&offset=${offset}`
+  );
+}
+
+export async function fetchAgentTelemetryEventsPage(
+  agentId: string,
+  limit: number,
+  offset: number
+): Promise<PaginatedResult<TelemetryEvent>> {
+  return readJson<PaginatedResult<TelemetryEvent>>(
+    `/api/agents/${agentId}/telemetry?limit=${limit}&offset=${offset}`
+  );
+}
+
+export async function fetchAgentDecisionsPage(
+  agentId: string,
+  limit: number,
+  offset: number
+): Promise<PaginatedResult<Decision>> {
+  return readJson<PaginatedResult<Decision>>(
+    `/api/agents/${agentId}/decisions?limit=${limit}&offset=${offset}`
+  );
 }
 
 export async function updateAgentNickname(agentId: number, nickname: string) {

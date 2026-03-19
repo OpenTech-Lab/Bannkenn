@@ -203,6 +203,13 @@ export type Decision = {
   expires_at?: string | null;
 };
 
+export type PaginatedResult<T> = {
+  items: T[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
+};
+
 export type AgentDetailSnapshot = {
   agent: AgentStatus;
   behaviorEvents: BehaviorEvent[];

@@ -86,6 +86,52 @@ async fn containment_events_update_latest_status_and_keep_history() {
 }
 
 #[tokio::test]
+async fn agent_scoped_behavior_and_containment_pages_support_offsets() {
+    let db = test_db().await;
+
+    let newest = sample_behavior_event("agent-a", "/srv/data", "2026-03-14T09:03:00+00:00");
+    let middle = sample_behavior_event("agent-a", "/srv/data", "2026-03-14T09:02:00+00:00");
+    let oldest = sample_behavior_event("agent-a", "/srv/data", "2026-03-14T09:01:00+00:00");
+    db.insert_behavior_event(&newest).await.unwrap();
+    db.insert_behavior_event(&middle).await.unwrap();
+    db.insert_behavior_event(&oldest).await.unwrap();
+
+    let behavior_page = db
+        .list_behavior_events_by_agent_page("agent-a", 2, 1)
+        .await
+        .unwrap();
+    assert_eq!(behavior_page.len(), 2);
+    assert_eq!(behavior_page[0].created_at, "2026-03-14T09:02:00+00:00");
+    assert_eq!(behavior_page[1].created_at, "2026-03-14T09:01:00+00:00");
+
+    let suspicious = sample_containment_event(
+        "agent-a",
+        "/srv/data",
+        "suspicious",
+        "2026-03-14T09:03:00+00:00",
+    );
+    let throttle = sample_containment_event(
+        "agent-a",
+        "/srv/data",
+        "throttle",
+        "2026-03-14T09:02:00+00:00",
+    );
+    let fuse =
+        sample_containment_event("agent-a", "/srv/data", "fuse", "2026-03-14T09:01:00+00:00");
+    db.record_containment_event(&suspicious).await.unwrap();
+    db.record_containment_event(&throttle).await.unwrap();
+    db.record_containment_event(&fuse).await.unwrap();
+
+    let containment_page = db
+        .list_containment_events_by_agent_page("agent-a", 2, 1)
+        .await
+        .unwrap();
+    assert_eq!(containment_page.len(), 2);
+    assert_eq!(containment_page[0].state, "throttle");
+    assert_eq!(containment_page[1].state, "fuse");
+}
+
+#[tokio::test]
 async fn behavior_incidents_correlate_across_agents_and_emit_alerts() {
     let db = test_db().await;
 

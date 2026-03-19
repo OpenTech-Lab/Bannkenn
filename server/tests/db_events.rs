@@ -182,6 +182,89 @@ async fn list_telemetry_orders_by_preserved_event_timestamp() {
 }
 
 #[tokio::test]
+async fn source_scoped_decision_and_telemetry_pages_support_offsets() {
+    let db = test_db().await;
+
+    db.insert_decision_with_timestamp(
+        "203.0.113.10",
+        "newest",
+        "block",
+        "agent-a",
+        Some("2026-03-11T09:03:00+00:00"),
+    )
+    .await
+    .unwrap()
+    .expect("newest decision should be inserted");
+    db.insert_decision_with_timestamp(
+        "203.0.113.11",
+        "middle",
+        "block",
+        "agent-a",
+        Some("2026-03-11T09:02:00+00:00"),
+    )
+    .await
+    .unwrap()
+    .expect("middle decision should be inserted");
+    db.insert_decision_with_timestamp(
+        "203.0.113.12",
+        "oldest",
+        "block",
+        "agent-a",
+        Some("2026-03-11T09:01:00+00:00"),
+    )
+    .await
+    .unwrap()
+    .expect("oldest decision should be inserted");
+
+    let decision_page = db
+        .list_decisions_by_source_page("agent-a", 2, 1)
+        .await
+        .unwrap();
+    assert_eq!(decision_page.len(), 2);
+    assert_eq!(decision_page[0].ip, "203.0.113.11");
+    assert_eq!(decision_page[1].ip, "203.0.113.12");
+
+    db.insert_telemetry_event_with_timestamp(
+        "10.0.0.10",
+        "newest",
+        "alert",
+        "agent-a",
+        None,
+        Some("2026-03-11T09:03:00+00:00"),
+    )
+    .await
+    .unwrap();
+    db.insert_telemetry_event_with_timestamp(
+        "10.0.0.11",
+        "middle",
+        "alert",
+        "agent-a",
+        None,
+        Some("2026-03-11T09:02:00+00:00"),
+    )
+    .await
+    .unwrap();
+    db.insert_telemetry_event_with_timestamp(
+        "10.0.0.12",
+        "oldest",
+        "alert",
+        "agent-a",
+        None,
+        Some("2026-03-11T09:01:00+00:00"),
+    )
+    .await
+    .unwrap();
+
+    let telemetry_page = db
+        .list_telemetry_by_source_page("agent-a", 2, 1)
+        .await
+        .unwrap();
+    assert_eq!(telemetry_page.len(), 2);
+    assert_eq!(telemetry_page[0].ip, "10.0.0.11");
+    assert_eq!(telemetry_page[1].ip, "10.0.0.12");
+}
+
+#[tokio::test]
 async fn list_ssh_logins_orders_by_preserved_event_timestamp() {
     let db = test_db().await;
 

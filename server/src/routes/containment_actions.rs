@@ -17,6 +17,7 @@ pub struct AppState {
 #[derive(Debug, Deserialize)]
 pub struct ListParams {
     pub limit: Option<i64>,
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,6 +44,28 @@ pub struct AckContainmentActionRequest {
 #[derive(Debug, Serialize)]
 pub struct AckContainmentActionResponse {
     pub action: ContainmentActionRow,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PaginatedResponse<T> {
+    pub items: Vec<T>,
+    pub limit: i64,
+    pub offset: i64,
+    pub has_more: bool,
+}
+
+fn paginated_response<T>(mut items: Vec<T>, limit: i64, offset: i64) -> PaginatedResponse<T> {
+    let has_more = items.len() as i64 > limit;
+    if has_more {
+        items.truncate(limit as usize);
+    }
+
+    PaginatedResponse {
+        items,
+        limit,
+        offset,
+        has_more,
+    }
 }
 
 fn is_valid_command_kind(value: &str) -> bool {
@@ -100,6 +123,7 @@ pub async fn list_by_agent(
     Query(params): Query<ListParams>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let limit = params.limit.unwrap_or(50).clamp(1, 500);
+    let offset = params.offset.unwrap_or(0).max(0);
     let Some(agent_name) = state
         .db
         .get_agent_name_by_id(agent_id)
@@ -111,11 +135,11 @@ pub async fn list_by_agent(
 
     let actions = state
         .db
-        .list_containment_actions_by_agent(&agent_name, limit)
+        .list_containment_actions_by_agent_page(&agent_name, limit.saturating_add(1), offset)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok(Json(actions))
+    Ok(Json(paginated_response(actions, limit, offset)))
 }
 
 pub async fn list_pending(
