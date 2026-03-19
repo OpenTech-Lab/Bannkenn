@@ -15,6 +15,7 @@
 
 ### Review
 - Added recent temp-write tracking plus a synthetic `temp write followed by execve` behavior event in the eBPF sensor manager.
+- Fixed the ringbuf exec path so temp-write→exec matching falls back to the tracked process `exe_path` when the raw eBPF exec event only carries a process name.
 - Added process-name / executable-path mismatch weighting in the containment scorer.
 - Verification: `cargo clippy --workspace -- -D warnings` passed.
 - Verification: `cargo test --workspace` passed.

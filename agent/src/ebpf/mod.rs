@@ -294,22 +294,30 @@ impl SensorManager {
             .events
             .iter()
             .filter_map(|event| match event {
-                LifecycleEvent::Exec { pid, exe_path, .. } if is_temp_path(exe_path) => {
-                    let recent = self.recent_temp_writes.get(exe_path)?;
+                LifecycleEvent::Exec { pid, exe_path, .. } => {
                     let process = lifecycle
                         .processes
                         .iter()
                         .find(|proc_info| proc_info.pid == *pid)
                         .map(process_info_from_tracked);
+                    let matched_path = process
+                        .as_ref()
+                        .map(|proc_info| proc_info.exe_path.as_str())
+                        .filter(|path| is_temp_path(path))
+                        .unwrap_or(exe_path);
+                    if !is_temp_path(matched_path) {
+                        return None;
+                    }
+                    let recent = self.recent_temp_writes.get(matched_path)?;
                     Some(self.scorer.score_temp_exec_trigger(
                         Utc::now(),
                         LIFECYCLE_EXEC_SENSOR_SOURCE,
                         &recent.watched_root,
-                        exe_path,
+                        matched_path,
                         process.as_ref(),
                     ))
                 }
-                _ => None,
+                LifecycleEvent::Exit { .. } => None,
             })
             .collect()
     }
@@ -994,6 +1002,53 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason == "process name/executable mismatch"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn ringbuf_exec_events_fall_back_to_tracked_process_exe_path() {
+        let root =
+            std::env::temp_dir().join(format!("bannkenn-exec-fallback-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+
+        let config = ContainmentConfig {
+            enabled: true,
+            watch_paths: vec![root.display().to_string()],
+            ..ContainmentConfig::default()
+        };
+        let mut sensor = SensorManager::from_config(&config).expect("sensor should be enabled");
+        sensor.recent_temp_writes.insert(
+            "/tmp/payload".to_string(),
+            RecentTempWrite {
+                recorded_at: Instant::now(),
+                watched_root: "/tmp".to_string(),
+            },
+        );
+        let lifecycle = LifecycleSnapshot {
+            processes: vec![TrackedProcess {
+                pid: 88,
+                process_name: "payload".to_string(),
+                exe_path: "/tmp/payload".to_string(),
+                command_line: "/tmp/payload --run".to_string(),
+                parent_process_name: Some("systemd".to_string()),
+                parent_command_line: Some("systemd".to_string()),
+                container_runtime: None,
+                container_id: None,
+                open_paths: std::collections::HashSet::new(),
+                protected: false,
+            }],
+            events: vec![LifecycleEvent::Exec {
+                pid: 88,
+                process_name: "payload".to_string(),
+                exe_path: "payload".to_string(),
+            }],
+        };
+
+        let events = sensor.build_temp_exec_events(&lifecycle);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].touched_paths, vec!["/tmp/payload".to_string()]);
 
         let _ = fs::remove_dir_all(root);
     }
