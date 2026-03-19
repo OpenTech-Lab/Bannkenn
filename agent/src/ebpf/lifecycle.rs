@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackedProcess {
     pub pid: u32,
+    pub parent_pid: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
     pub process_name: String,
     pub exe_path: String,
     pub command_line: String,
@@ -48,6 +51,13 @@ pub struct ProcessLifecycleTracker {
 struct ProcessIdentity {
     process_name: String,
     exe_path: String,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ProcessStatusMetadata {
+    parent_pid: Option<u32>,
+    uid: Option<u32>,
+    gid: Option<u32>,
 }
 
 impl ProcessLifecycleTracker {
@@ -142,8 +152,9 @@ fn inspect_process(
         return None;
     }
 
-    let parent_pid = read_parent_pid(proc_dir.join("status"));
-    let (parent_process_name, parent_command_line) = parent_pid
+    let status = read_status_metadata(proc_dir.join("status"));
+    let (parent_process_name, parent_command_line) = status
+        .parent_pid
         .and_then(inspect_parent_process)
         .unwrap_or((None, None));
     let (container_runtime, container_id) = read_container_context(proc_dir.join("cgroup"));
@@ -154,6 +165,9 @@ fn inspect_process(
 
     Some(TrackedProcess {
         pid,
+        parent_pid: status.parent_pid,
+        uid: status.uid,
+        gid: status.gid,
         process_name,
         exe_path,
         command_line,
@@ -271,12 +285,33 @@ fn read_cmdline(path: PathBuf) -> Option<String> {
     }
 }
 
-fn read_parent_pid(path: PathBuf) -> Option<u32> {
-    let content = fs::read_to_string(path).ok()?;
-    content.lines().find_map(|line| {
-        let value = line.strip_prefix("PPid:")?.trim();
-        value.parse::<u32>().ok()
-    })
+fn read_status_metadata(path: PathBuf) -> ProcessStatusMetadata {
+    let Ok(content) = fs::read_to_string(path) else {
+        return ProcessStatusMetadata::default();
+    };
+
+    let mut metadata = ProcessStatusMetadata::default();
+    for line in content.lines() {
+        if metadata.parent_pid.is_none() {
+            metadata.parent_pid = parse_status_first_u32(line, "PPid:");
+        }
+        if metadata.uid.is_none() {
+            metadata.uid = parse_status_first_u32(line, "Uid:");
+        }
+        if metadata.gid.is_none() {
+            metadata.gid = parse_status_first_u32(line, "Gid:");
+        }
+        if metadata.parent_pid.is_some() && metadata.uid.is_some() && metadata.gid.is_some() {
+            break;
+        }
+    }
+
+    metadata
+}
+
+fn parse_status_first_u32(line: &str, prefix: &str) -> Option<u32> {
+    let value = line.strip_prefix(prefix)?.split_whitespace().next()?;
+    value.parse::<u32>().ok()
 }
 
 fn inspect_parent_process(ppid: u32) -> Option<(Option<String>, Option<String>)> {

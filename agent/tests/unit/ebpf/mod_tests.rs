@@ -230,6 +230,9 @@ async fn recent_temp_write_followed_by_exec_emits_trigger_event() {
     let lifecycle = LifecycleSnapshot {
         processes: vec![TrackedProcess {
             pid: 77,
+            parent_pid: Some(1),
+            uid: Some(0),
+            gid: Some(0),
             process_name: "cron".to_string(),
             exe_path: "/tmp/payload".to_string(),
             command_line: "/tmp/payload --run".to_string(),
@@ -285,6 +288,9 @@ async fn ringbuf_exec_events_fall_back_to_tracked_process_exe_path() {
     let lifecycle = LifecycleSnapshot {
         processes: vec![TrackedProcess {
             pid: 88,
+            parent_pid: Some(1),
+            uid: Some(0),
+            gid: Some(0),
             process_name: "payload".to_string(),
             exe_path: "/tmp/payload".to_string(),
             command_line: "/tmp/payload --run".to_string(),

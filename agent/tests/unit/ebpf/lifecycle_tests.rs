@@ -3,6 +3,9 @@ use super::*;
 fn tracked_process(pid: u32, process_name: &str, exe_path: &str) -> TrackedProcess {
     TrackedProcess {
         pid,
+        parent_pid: None,
+        uid: None,
+        gid: None,
         process_name: process_name.to_string(),
         exe_path: exe_path.to_string(),
         command_line: exe_path.to_string(),
@@ -95,6 +98,24 @@ fn container_context_detects_crio_runtime_from_scope_prefix() {
     );
     assert_eq!(runtime.as_deref(), Some("crio"));
     assert_eq!(id.as_deref(), Some("0123456789abcdef0123456789abcdef"));
+}
+
+#[test]
+fn status_metadata_reads_parent_uid_and_gid() {
+    let path = std::env::temp_dir().join(format!("bannkenn-status-{}", uuid::Uuid::new_v4()));
+    fs::write(
+        &path,
+        "Name:\tpython3\nPPid:\t77\nUid:\t1000\t1000\t1000\t1000\nGid:\t1001\t1001\t1001\t1001\n",
+    )
+    .unwrap();
+
+    let metadata = read_status_metadata(path.clone());
+
+    assert_eq!(metadata.parent_pid, Some(77));
+    assert_eq!(metadata.uid, Some(1000));
+    assert_eq!(metadata.gid, Some(1001));
+
+    let _ = fs::remove_file(path);
 }
 
 fn read_container_context_from_str(content: &str) -> (Option<String>, Option<String>) {

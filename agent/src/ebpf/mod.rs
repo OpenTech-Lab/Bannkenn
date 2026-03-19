@@ -880,6 +880,9 @@ fn process_info_from_tracked(
 ) -> crate::ebpf::events::ProcessInfo {
     crate::ebpf::events::ProcessInfo {
         pid: process.pid,
+        parent_pid: process.parent_pid,
+        uid: process.uid,
+        gid: process.gid,
         process_name: process.process_name.clone(),
         exe_path: process.exe_path.clone(),
         command_line: process.command_line.clone(),

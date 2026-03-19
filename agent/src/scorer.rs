@@ -289,6 +289,9 @@ impl CompositeBehaviorScorer {
             source: source.to_string(),
             watched_root: watched_root.to_string(),
             pid: process.map(|proc_info| proc_info.pid),
+            parent_pid: process.and_then(|proc_info| proc_info.parent_pid),
+            uid: process.and_then(|proc_info| proc_info.uid),
+            gid: process.and_then(|proc_info| proc_info.gid),
             process_name: process.map(|proc_info| proc_info.process_name.clone()),
             exe_path: process.map(|proc_info| proc_info.exe_path.clone()),
             command_line: process.map(|proc_info| proc_info.command_line.clone()),
@@ -296,6 +299,8 @@ impl CompositeBehaviorScorer {
                 .and_then(|proc_info| proc_info.parent_process_name.clone()),
             parent_command_line: process
                 .and_then(|proc_info| proc_info.parent_command_line.clone()),
+            container_runtime: process.and_then(|proc_info| proc_info.container_runtime.clone()),
+            container_id: process.and_then(|proc_info| proc_info.container_id.clone()),
             correlation_hits: process
                 .map(|proc_info| proc_info.correlation_hits)
                 .unwrap_or(0),
@@ -391,6 +396,9 @@ impl Scorer for CompositeBehaviorScorer {
             source: batch.source.clone(),
             watched_root: batch.watched_root.clone(),
             pid: process.map(|proc_info| proc_info.pid),
+            parent_pid: process.and_then(|proc_info| proc_info.parent_pid),
+            uid: process.and_then(|proc_info| proc_info.uid),
+            gid: process.and_then(|proc_info| proc_info.gid),
             process_name: process.map(|proc_info| proc_info.process_name.clone()),
             exe_path: process.map(|proc_info| proc_info.exe_path.clone()),
             command_line: process.map(|proc_info| proc_info.command_line.clone()),
@@ -398,6 +406,8 @@ impl Scorer for CompositeBehaviorScorer {
                 .and_then(|proc_info| proc_info.parent_process_name.clone()),
             parent_command_line: process
                 .and_then(|proc_info| proc_info.parent_command_line.clone()),
+            container_runtime: process.and_then(|proc_info| proc_info.container_runtime.clone()),
+            container_id: process.and_then(|proc_info| proc_info.container_id.clone()),
             correlation_hits: process
                 .map(|proc_info| proc_info.correlation_hits)
                 .unwrap_or(0),

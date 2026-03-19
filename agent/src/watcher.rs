@@ -8,17 +8,19 @@ use crate::firewall::{
     should_skip_local_firewall_enforcement,
 };
 use crate::geoip;
-use crate::patterns::{all_patterns, all_ssh_login_patterns};
+use crate::patterns::{all_patterns, all_ssh_login_patterns, DetectionPattern, SshLoginPattern};
 use crate::risk_level::HostRiskLevel;
 use crate::shared_risk::SharedRiskSnapshot;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
+use tokio::process::Command;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{sleep, Duration};
 
@@ -27,6 +29,17 @@ const TAIL_ROTATION_CHECK_IDLE_POLLS: u32 = 5;
 const LOG_OPEN_INITIAL_BACKOFF_SECS: u64 = 2;
 const LOG_OPEN_MAX_BACKOFF_SECS: u64 = 60;
 const LOG_WARNING_COOLDOWN_SECS: u64 = 60;
+const JOURNALD_AUTH_SOURCE_LABEL: &str = "journald:auth";
+const JOURNALCTL_AUTH_FOLLOW_ARGS: &[&str] = &[
+    "--follow",
+    "--no-pager",
+    "--quiet",
+    "--output",
+    "cat",
+    "--lines",
+    "0",
+    "--facility=auth,authpriv",
+];
 
 #[derive(Debug, Clone)]
 struct RawDetection {
@@ -48,6 +61,26 @@ struct RateLimitedWarning {
     cooldown: Duration,
     last_emitted: Option<Instant>,
     suppressed: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LogSourcePlan {
+    File {
+        path: String,
+    },
+    JournaldAuth {
+        display_path: String,
+        fallback_path: String,
+    },
+}
+
+impl LogSourcePlan {
+    fn display_path(&self) -> &str {
+        match self {
+            Self::File { path } => path,
+            Self::JournaldAuth { display_path, .. } => display_path,
+        }
+    }
 }
 
 impl RateLimitedWarning {
@@ -127,20 +160,21 @@ pub async fn watch(
     shared_risk_snapshot: Arc<RwLock<SharedRiskSnapshot>>,
     mut block_outcomes_rx: mpsc::Receiver<BlockOutcome>,
 ) -> Result<()> {
-    let log_paths = config.effective_log_paths();
-    if log_paths.is_empty() {
+    let log_sources = build_log_source_plans(config.effective_log_paths(), journald_is_available());
+    if log_sources.is_empty() {
         return Err(anyhow::anyhow!("No log paths configured"));
     }
 
     let (raw_tx, mut raw_rx) = mpsc::channel::<RawDetection>(1000);
     let (ssh_login_tx, mut ssh_login_rx) = mpsc::channel::<RawSshLogin>(200);
 
-    for log_path in log_paths {
+    for log_source in log_sources {
         let tx_clone = raw_tx.clone();
         let ssh_tx_clone = ssh_login_tx.clone();
+        let display_path = log_source.display_path().to_string();
         tokio::spawn(async move {
-            if let Err(err) = tail_log_path(log_path.clone(), tx_clone, ssh_tx_clone).await {
-                tracing::error!("Tailer stopped for {}: {}", log_path, err);
+            if let Err(err) = tail_log_source(log_source, tx_clone, ssh_tx_clone).await {
+                tracing::error!("Tailer stopped for {}: {}", display_path, err);
             }
         });
     }
@@ -231,6 +265,54 @@ pub async fn watch(
     Ok(())
 }
 
+fn build_log_source_plans(log_paths: Vec<String>, journald_available: bool) -> Vec<LogSourcePlan> {
+    let mut sources = Vec::new();
+    let mut journald_auth_added = false;
+
+    for path in log_paths {
+        if journald_available && is_legacy_auth_log_path(&path) {
+            if !journald_auth_added {
+                sources.push(LogSourcePlan::JournaldAuth {
+                    display_path: JOURNALD_AUTH_SOURCE_LABEL.to_string(),
+                    fallback_path: path,
+                });
+                journald_auth_added = true;
+            }
+            continue;
+        }
+
+        sources.push(LogSourcePlan::File { path });
+    }
+
+    sources
+}
+
+async fn tail_log_source(
+    source: LogSourcePlan,
+    tx: mpsc::Sender<RawDetection>,
+    ssh_login_tx: mpsc::Sender<RawSshLogin>,
+) -> Result<()> {
+    match source {
+        LogSourcePlan::File { path } => tail_log_path(path, tx, ssh_login_tx).await,
+        LogSourcePlan::JournaldAuth {
+            display_path,
+            fallback_path,
+        } => match tail_auth_journald(display_path.clone(), tx.clone(), ssh_login_tx.clone()).await
+        {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to start {} stream: {}. Falling back to {}",
+                    display_path,
+                    err,
+                    fallback_path
+                );
+                tail_log_path(fallback_path, tx, ssh_login_tx).await
+            }
+        },
+    }
+}
+
 async fn tail_log_path(
     log_path: String,
     tx: mpsc::Sender<RawDetection>,
@@ -306,47 +388,15 @@ async fn tail_log_path(
                     file_pos = file.seek(std::io::SeekFrom::Current(0)).await?;
 
                     for line in buffer.lines() {
-                        // Unwrap Docker json-file log envelope if present so
-                        // patterns match the actual log content inside it.
-                        let effective_line = extract_log_line(line);
-
-                        // Check SSH successful-login patterns first.
-                        // A successful login is informational — it must NOT
-                        // enter the attack pipeline.  If matched, send via the
-                        // dedicated ssh_login channel and skip attack patterns.
-                        let mut matched_login = false;
-                        for lp in &ssh_login_patterns {
-                            if let Some(caps) = lp.regex.captures(effective_line.as_ref()) {
-                                if let (Some(user), Some(ip)) = (caps.get(1), caps.get(2)) {
-                                    let _ = ssh_login_tx
-                                        .send(RawSshLogin {
-                                            ip: ip.as_str().to_string(),
-                                            username: user.as_str().to_string(),
-                                            log_path: log_path.clone(),
-                                        })
-                                        .await;
-                                    matched_login = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if matched_login {
-                            continue;
-                        }
-
-                        for pattern in &patterns {
-                            if let Some(caps) = pattern.regex.captures(effective_line.as_ref()) {
-                                if let Some(m) = caps.get(1) {
-                                    let _ = tx
-                                        .send(RawDetection {
-                                            ip: m.as_str().to_string(),
-                                            reason: pattern.reason.to_string(),
-                                            log_path: log_path.clone(),
-                                        })
-                                        .await;
-                                }
-                            }
-                        }
+                        dispatch_log_line(
+                            line,
+                            &log_path,
+                            &patterns,
+                            &ssh_login_patterns,
+                            &tx,
+                            &ssh_login_tx,
+                        )
+                        .await;
                     }
                 }
                 Err(err) => {
@@ -361,6 +411,154 @@ async fn tail_log_path(
 
         sleep(open_backoff).await;
         open_backoff = next_retry_backoff(open_backoff);
+    }
+}
+
+async fn tail_auth_journald(
+    display_path: String,
+    tx: mpsc::Sender<RawDetection>,
+    ssh_login_tx: mpsc::Sender<RawSshLogin>,
+) -> Result<()> {
+    let patterns = all_patterns()?;
+    let ssh_login_patterns = all_ssh_login_patterns()?;
+    let warning_cooldown = Duration::from_secs(LOG_WARNING_COOLDOWN_SECS);
+    let mut stream_warning = RateLimitedWarning::new(warning_cooldown);
+    let mut restart_backoff = Duration::from_secs(LOG_OPEN_INITIAL_BACKOFF_SECS);
+    let mut started_once = false;
+
+    loop {
+        let mut child = match spawn_auth_journalctl_follow() {
+            Ok(child) => {
+                if !started_once {
+                    tracing::info!(
+                        "Using journald auth stream {} instead of legacy auth file polling",
+                        display_path
+                    );
+                }
+                started_once = true;
+                stream_warning.reset();
+                restart_backoff = Duration::from_secs(LOG_OPEN_INITIAL_BACKOFF_SECS);
+                child
+            }
+            Err(err) if !started_once => return Err(err),
+            Err(err) => {
+                emit_rate_limited_warning(
+                    &mut stream_warning,
+                    format!(
+                        "Failed to restart {} stream: {}. Retrying in {}s",
+                        display_path,
+                        err,
+                        restart_backoff.as_secs().max(1)
+                    ),
+                );
+                sleep(restart_backoff).await;
+                restart_backoff = next_retry_backoff(restart_backoff);
+                continue;
+            }
+        };
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("journalctl follow did not expose stdout"))?;
+        let mut lines = BufReader::new(stdout).lines();
+
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    dispatch_log_line(
+                        &line,
+                        &display_path,
+                        &patterns,
+                        &ssh_login_patterns,
+                        &tx,
+                        &ssh_login_tx,
+                    )
+                    .await;
+                }
+                Ok(None) => {
+                    let status = child.wait().await?;
+                    emit_rate_limited_warning(
+                        &mut stream_warning,
+                        format!(
+                            "{} stream exited with status {}. Restarting in {}s",
+                            display_path,
+                            status,
+                            restart_backoff.as_secs().max(1)
+                        ),
+                    );
+                    break;
+                }
+                Err(err) => {
+                    emit_rate_limited_warning(
+                        &mut stream_warning,
+                        format!(
+                            "Error reading {} stream: {}. Restarting in {}s",
+                            display_path,
+                            err,
+                            restart_backoff.as_secs().max(1)
+                        ),
+                    );
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    break;
+                }
+            }
+        }
+
+        sleep(restart_backoff).await;
+        restart_backoff = next_retry_backoff(restart_backoff);
+    }
+}
+
+fn spawn_auth_journalctl_follow() -> Result<tokio::process::Child> {
+    let mut command = Command::new("journalctl");
+    command
+        .args(JOURNALCTL_AUTH_FOLLOW_ARGS)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    Ok(command.spawn()?)
+}
+
+async fn dispatch_log_line(
+    line: &str,
+    log_path: &str,
+    patterns: &[DetectionPattern],
+    ssh_login_patterns: &[SshLoginPattern],
+    tx: &mpsc::Sender<RawDetection>,
+    ssh_login_tx: &mpsc::Sender<RawSshLogin>,
+) {
+    let effective_line = extract_log_line(line);
+
+    for login_pattern in ssh_login_patterns {
+        if let Some(caps) = login_pattern.regex.captures(effective_line.as_ref()) {
+            if let (Some(user), Some(ip)) = (caps.get(1), caps.get(2)) {
+                let _ = ssh_login_tx
+                    .send(RawSshLogin {
+                        ip: ip.as_str().to_string(),
+                        username: user.as_str().to_string(),
+                        log_path: log_path.to_string(),
+                    })
+                    .await;
+                return;
+            }
+        }
+    }
+
+    for pattern in patterns {
+        if let Some(caps) = pattern.regex.captures(effective_line.as_ref()) {
+            if let Some(m) = caps.get(1) {
+                let _ = tx
+                    .send(RawDetection {
+                        ip: m.as_str().to_string(),
+                        reason: pattern.reason.to_string(),
+                        log_path: log_path.to_string(),
+                    })
+                    .await;
+            }
+        }
     }
 }
 

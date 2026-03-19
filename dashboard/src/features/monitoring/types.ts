@@ -27,11 +27,16 @@ export type BehaviorEvent = {
   source: string;
   watched_root: string;
   pid?: number | null;
+  parent_pid?: number | null;
+  uid?: number | null;
+  gid?: number | null;
   process_name?: string | null;
   exe_path?: string | null;
   command_line?: string | null;
   parent_process_name?: string | null;
   parent_command_line?: string | null;
+  container_runtime?: string | null;
+  container_id?: string | null;
   correlation_hits: number;
   file_ops: BehaviorFileOps;
   touched_paths: string[];

@@ -22,11 +22,16 @@ pub struct CreateBehaviorEventRequest {
     pub source: String,
     pub watched_root: String,
     pub pid: Option<u32>,
+    pub parent_pid: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
     pub parent_process_name: Option<String>,
     pub parent_command_line: Option<String>,
+    pub container_runtime: Option<String>,
+    pub container_id: Option<String>,
     pub correlation_hits: u32,
     pub file_ops: BehaviorFileOpsRow,
     #[serde(default)]
@@ -69,6 +74,9 @@ pub async fn create(
         source: cap_string(payload.source, MAX_STRING_BYTES),
         watched_root: cap_string(payload.watched_root, MAX_STRING_BYTES),
         pid: payload.pid,
+        parent_pid: payload.parent_pid,
+        uid: payload.uid,
+        gid: payload.gid,
         process_name: payload.process_name,
         exe_path: payload.exe_path,
         command_line: payload
@@ -79,6 +87,12 @@ pub async fn create(
             .map(|s| cap_string(s, MAX_STRING_BYTES)),
         parent_command_line: payload
             .parent_command_line
+            .map(|s| cap_string(s, MAX_STRING_BYTES)),
+        container_runtime: payload
+            .container_runtime
+            .map(|s| cap_string(s, MAX_STRING_BYTES)),
+        container_id: payload
+            .container_id
             .map(|s| cap_string(s, MAX_STRING_BYTES)),
         correlation_hits: payload.correlation_hits,
         file_ops: payload.file_ops,

@@ -86,11 +86,14 @@ fn outbox_round_trips_behavior_and_containment_reports() {
     let mut outbox = Outbox::load(path.clone());
     outbox
         .enqueue(OutboxPayload::BehaviorEvent {
-            report: BehaviorEventUpload {
+            report: Box::new(BehaviorEventUpload {
                 timestamp: "2026-03-14T10:00:00+00:00".to_string(),
                 source: "ebpf_ringbuf".to_string(),
                 watched_root: "/srv/data".to_string(),
                 pid: Some(42),
+                parent_pid: Some(1),
+                uid: Some(1000),
+                gid: Some(1000),
                 process_name: Some("python3".to_string()),
                 exe_path: Some("/usr/bin/python3".to_string()),
                 command_line: Some("python3 encrypt.py".to_string()),
@@ -106,10 +109,12 @@ fn outbox_round_trips_behavior_and_containment_reports() {
                 protected_paths_touched: vec!["/srv/data/secret.txt".to_string()],
                 bytes_written: 4096,
                 io_rate_bytes_per_sec: 2048,
+                container_runtime: Some("docker".to_string()),
+                container_id: Some("0123456789abcdef0123456789abcdef".to_string()),
                 score: 61,
                 reasons: vec!["rename burst".to_string()],
                 level: "throttle_candidate".to_string(),
-            },
+            }),
         })
         .unwrap();
     outbox

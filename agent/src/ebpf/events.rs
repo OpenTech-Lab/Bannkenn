@@ -50,6 +50,12 @@ pub struct FileActivityBatch {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProcessInfo {
     pub pid: u32,
+    #[serde(default)]
+    pub parent_pid: Option<u32>,
+    #[serde(default)]
+    pub uid: Option<u32>,
+    #[serde(default)]
+    pub gid: Option<u32>,
     pub process_name: String,
     pub exe_path: String,
     pub command_line: String,
@@ -90,11 +96,16 @@ pub struct BehaviorEvent {
     pub source: String,
     pub watched_root: String,
     pub pid: Option<u32>,
+    pub parent_pid: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
     pub parent_process_name: Option<String>,
     pub parent_command_line: Option<String>,
+    pub container_runtime: Option<String>,
+    pub container_id: Option<String>,
     pub correlation_hits: u32,
     pub file_ops: FileOperationCounts,
     pub touched_paths: Vec<String>,

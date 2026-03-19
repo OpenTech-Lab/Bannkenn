@@ -48,6 +48,9 @@ impl ProcessCorrelator {
                 best_hits = correlation_hits;
                 best_process = Some(ProcessInfo {
                     pid: proc_info.pid,
+                    parent_pid: proc_info.parent_pid,
+                    uid: proc_info.uid,
+                    gid: proc_info.gid,
                     process_name: proc_info.process_name.clone(),
                     exe_path: proc_info.exe_path.clone(),
                     command_line: proc_info.command_line.clone(),

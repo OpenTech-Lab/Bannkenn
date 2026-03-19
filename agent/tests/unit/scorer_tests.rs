@@ -24,6 +24,9 @@ fn batch_with_ops(
 fn process(pid: u32, process_name: &str, exe_path: &str, command_line: &str) -> ProcessInfo {
     ProcessInfo {
         pid,
+        parent_pid: None,
+        uid: None,
+        gid: None,
         process_name: process_name.to_string(),
         exe_path: exe_path.to_string(),
         command_line: command_line.to_string(),
@@ -55,6 +58,9 @@ fn mass_rename_scores_as_suspicious() {
     let correlation = CorrelationResult {
         process: Some(ProcessInfo {
             pid: 4242,
+            parent_pid: Some(1),
+            uid: Some(1000),
+            gid: Some(1000),
             process_name: "python3".to_string(),
             exe_path: "/usr/bin/python3".to_string(),
             command_line: "python3 encrypt.py".to_string(),

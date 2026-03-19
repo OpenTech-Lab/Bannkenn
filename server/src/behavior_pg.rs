@@ -13,11 +13,16 @@ CREATE TABLE IF NOT EXISTS behavior_events_archive (
     source TEXT NOT NULL,
     watched_root TEXT NOT NULL,
     pid INTEGER,
+    parent_pid INTEGER,
+    uid INTEGER,
+    gid INTEGER,
     process_name TEXT,
     exe_path TEXT,
     command_line TEXT,
     parent_process_name TEXT,
     parent_command_line TEXT,
+    container_runtime TEXT,
+    container_id TEXT,
     correlation_hits BIGINT NOT NULL,
     file_ops_created BIGINT NOT NULL,
     file_ops_modified BIGINT NOT NULL,
@@ -64,11 +69,16 @@ pub struct BehaviorArchiveRecord {
     pub source: String,
     pub watched_root: String,
     pub pid: Option<u32>,
+    pub parent_pid: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
     pub parent_process_name: Option<String>,
     pub parent_command_line: Option<String>,
+    pub container_runtime: Option<String>,
+    pub container_id: Option<String>,
     pub correlation_hits: u32,
     pub file_ops_created: u32,
     pub file_ops_modified: u32,
@@ -98,11 +108,16 @@ impl BehaviorArchiveRecord {
             source: event.source.clone(),
             watched_root: event.watched_root.clone(),
             pid: event.pid,
+            parent_pid: event.parent_pid,
+            uid: event.uid,
+            gid: event.gid,
             process_name: event.process_name.clone(),
             exe_path: event.exe_path.clone(),
             command_line: event.command_line.clone(),
             parent_process_name: event.parent_process_name.clone(),
             parent_command_line: event.parent_command_line.clone(),
+            container_runtime: event.container_runtime.clone(),
+            container_id: event.container_id.clone(),
             correlation_hits: event.correlation_hits,
             file_ops_created: event.file_ops.created,
             file_ops_modified: event.file_ops.modified,
@@ -148,6 +163,27 @@ impl BehaviorPgArchive {
         )
         .execute(&self.pool)
         .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS parent_pid INTEGER",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS uid INTEGER")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS gid INTEGER")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS container_runtime TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS container_id TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
         for statement in BEHAVIOR_ARCHIVE_INDEXES {
             sqlx::query(statement).execute(&self.pool).await?;
         }
@@ -164,11 +200,16 @@ impl BehaviorPgArchive {
                 source,
                 watched_root,
                 pid,
+                parent_pid,
+                uid,
+                gid,
                 process_name,
                 exe_path,
                 command_line,
                 parent_process_name,
                 parent_command_line,
+                container_runtime,
+                container_id,
                 correlation_hits,
                 file_ops_created,
                 file_ops_modified,
@@ -185,7 +226,8 @@ impl BehaviorPgArchive {
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
+                $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
+                $27, $28, $29
             )
             ON CONFLICT (sqlite_event_id) DO NOTHING
             "#,
@@ -196,11 +238,16 @@ impl BehaviorPgArchive {
         .bind(&record.source)
         .bind(&record.watched_root)
         .bind(record.pid.map(|value| value as i32))
+        .bind(record.parent_pid.map(|value| value as i32))
+        .bind(record.uid.map(|value| value as i32))
+        .bind(record.gid.map(|value| value as i32))
         .bind(&record.process_name)
         .bind(&record.exe_path)
         .bind(&record.command_line)
         .bind(&record.parent_process_name)
         .bind(&record.parent_command_line)
+        .bind(&record.container_runtime)
+        .bind(&record.container_id)
         .bind(i64::from(record.correlation_hits))
         .bind(i64::from(record.file_ops_created))
         .bind(i64::from(record.file_ops_modified))

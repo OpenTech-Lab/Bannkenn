@@ -49,11 +49,16 @@ impl Db {
             "source": &event.source,
             "level": &event.level,
             "pid": event.pid,
+            "parent_pid": event.parent_pid,
+            "uid": event.uid,
+            "gid": event.gid,
             "process_name": &event.process_name,
             "exe_path": &event.exe_path,
             "command_line": &event.command_line,
             "parent_process_name": &event.parent_process_name,
             "parent_command_line": &event.parent_command_line,
+            "container_runtime": &event.container_runtime,
+            "container_id": &event.container_id,
             "correlation_hits": event.correlation_hits,
             "file_ops": &event.file_ops,
             "touched_paths": &event.touched_paths,
@@ -155,11 +160,16 @@ impl Db {
                 source,
                 watched_root,
                 pid,
+                parent_pid,
+                uid,
+                gid,
                 process_name,
                 exe_path,
                 command_line,
                 parent_process_name,
                 parent_command_line,
+                container_runtime,
+                container_id,
                 correlation_hits,
                 file_ops_created,
                 file_ops_modified,
@@ -174,7 +184,7 @@ impl Db {
                 level,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(incident_id)
@@ -182,11 +192,16 @@ impl Db {
         .bind(&event.source)
         .bind(&event.watched_root)
         .bind(event.pid.map(i64::from))
+        .bind(event.parent_pid.map(i64::from))
+        .bind(event.uid.map(i64::from))
+        .bind(event.gid.map(i64::from))
         .bind(&event.process_name)
         .bind(&event.exe_path)
         .bind(&event.command_line)
         .bind(&event.parent_process_name)
         .bind(&event.parent_command_line)
+        .bind(&event.container_runtime)
+        .bind(&event.container_id)
         .bind(i64::from(event.correlation_hits))
         .bind(i64::from(event.file_ops.created))
         .bind(i64::from(event.file_ops.modified))
@@ -218,11 +233,16 @@ impl Db {
                 source,
                 watched_root,
                 pid,
+                parent_pid,
+                uid,
+                gid,
                 process_name,
                 exe_path,
                 command_line,
                 parent_process_name,
                 parent_command_line,
+                container_runtime,
+                container_id,
                 correlation_hits,
                 file_ops_created,
                 file_ops_modified,
@@ -271,11 +291,16 @@ impl Db {
                 source,
                 watched_root,
                 pid,
+                parent_pid,
+                uid,
+                gid,
                 process_name,
                 exe_path,
                 command_line,
                 parent_process_name,
                 parent_command_line,
+                container_runtime,
+                container_id,
                 correlation_hits,
                 file_ops_created,
                 file_ops_modified,
@@ -317,11 +342,16 @@ fn map_behavior_event_row(row: sqlx::sqlite::SqliteRow) -> anyhow::Result<Behavi
         source: row.try_get("source")?,
         watched_root: row.try_get("watched_root")?,
         pid: from_i64_opt_u32(row.try_get("pid")?, "behavior_events.pid")?,
+        parent_pid: from_i64_opt_u32(row.try_get("parent_pid")?, "behavior_events.parent_pid")?,
+        uid: from_i64_opt_u32(row.try_get("uid")?, "behavior_events.uid")?,
+        gid: from_i64_opt_u32(row.try_get("gid")?, "behavior_events.gid")?,
         process_name: row.try_get("process_name")?,
         exe_path: row.try_get("exe_path")?,
         command_line: row.try_get("command_line")?,
         parent_process_name: row.try_get("parent_process_name")?,
         parent_command_line: row.try_get("parent_command_line")?,
+        container_runtime: row.try_get("container_runtime")?,
+        container_id: row.try_get("container_id")?,
         correlation_hits: from_i64_u32(
             row.try_get("correlation_hits")?,
             "behavior_events.correlation_hits",

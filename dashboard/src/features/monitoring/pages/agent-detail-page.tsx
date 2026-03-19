@@ -482,6 +482,16 @@ export function AgentDetailPage() {
                                     event.parent_command_line ??
                                     'unknown'}
                                 </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  ids: pid {event.pid ?? '—'} / ppid {event.parent_pid ?? '—'} / uid
+                                  :gid {event.uid ?? '—'}:{event.gid ?? '—'}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  container:{' '}
+                                  {event.container_runtime && event.container_id
+                                    ? `${event.container_runtime}:${event.container_id}`
+                                    : 'host'}
+                                </p>
                               </div>
                             </TableCell>
                             <TableCell>

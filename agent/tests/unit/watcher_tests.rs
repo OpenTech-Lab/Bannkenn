@@ -1,6 +1,7 @@
 use super::{
-    extract_log_line, handle_block_outcome, is_immediate_block_signal, next_retry_backoff,
-    process_failed_attempt, BlockOutcome, RateLimitedWarning, RawDetection,
+    build_log_source_plans, extract_log_line, handle_block_outcome, is_immediate_block_signal,
+    next_retry_backoff, process_failed_attempt, BlockOutcome, LogSourcePlan, RateLimitedWarning,
+    RawDetection, JOURNALD_AUTH_SOURCE_LABEL,
 };
 use crate::burst::BurstDetector;
 use crate::campaign::LocalCampaignTracker;
@@ -107,6 +108,54 @@ fn retry_backoff_doubles_until_the_cap() {
 
     let capped = next_retry_backoff(Duration::from_secs(60));
     assert_eq!(capped, Duration::from_secs(60));
+}
+
+#[test]
+fn build_log_source_plans_prefers_single_journald_auth_stream() {
+    let sources = build_log_source_plans(
+        vec![
+            "/var/log/auth.log".to_string(),
+            "/var/log/secure".to_string(),
+            "/var/log/nginx/access.log".to_string(),
+        ],
+        true,
+    );
+
+    assert_eq!(sources.len(), 2);
+    assert!(matches!(
+        &sources[0],
+        LogSourcePlan::JournaldAuth {
+            display_path,
+            fallback_path,
+        } if display_path == JOURNALD_AUTH_SOURCE_LABEL && fallback_path == "/var/log/auth.log"
+    ));
+    assert!(matches!(
+        &sources[1],
+        LogSourcePlan::File { path } if path == "/var/log/nginx/access.log"
+    ));
+}
+
+#[test]
+fn build_log_source_plans_keeps_legacy_files_without_journald() {
+    let sources = build_log_source_plans(
+        vec![
+            "/var/log/auth.log".to_string(),
+            "/var/log/secure".to_string(),
+        ],
+        false,
+    );
+
+    assert_eq!(
+        sources,
+        vec![
+            LogSourcePlan::File {
+                path: "/var/log/auth.log".to_string(),
+            },
+            LogSourcePlan::File {
+                path: "/var/log/secure".to_string(),
+            },
+        ]
+    );
 }
 
 #[tokio::test]

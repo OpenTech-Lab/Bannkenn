@@ -46,11 +46,16 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             source TEXT NOT NULL,
             watched_root TEXT NOT NULL,
             pid INTEGER,
+            parent_pid INTEGER,
+            uid INTEGER,
+            gid INTEGER,
             process_name TEXT,
             exe_path TEXT,
             command_line TEXT,
             parent_process_name TEXT,
             parent_command_line TEXT,
+            container_runtime TEXT,
+            container_id TEXT,
             correlation_hits INTEGER NOT NULL DEFAULT 0,
             file_ops_created INTEGER NOT NULL DEFAULT 0,
             file_ops_modified INTEGER NOT NULL DEFAULT 0,
@@ -406,6 +411,21 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
         .execute(pool)
         .await;
     let _ = sqlx::query("ALTER TABLE behavior_events ADD COLUMN parent_command_line TEXT")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE behavior_events ADD COLUMN parent_pid INTEGER")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE behavior_events ADD COLUMN uid INTEGER")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE behavior_events ADD COLUMN gid INTEGER")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE behavior_events ADD COLUMN container_runtime TEXT")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE behavior_events ADD COLUMN container_id TEXT")
         .execute(pool)
         .await;
     let _ = sqlx::query("ALTER TABLE containment_events ADD COLUMN incident_id INTEGER")

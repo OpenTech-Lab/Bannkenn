@@ -22,6 +22,9 @@ fn correlator_prefers_non_protected_process_with_exact_path_hits() {
         processes: vec![
             TrackedProcess {
                 pid: 1,
+                parent_pid: None,
+                uid: None,
+                gid: None,
                 process_name: "systemd".to_string(),
                 exe_path: "/usr/lib/systemd/systemd".to_string(),
                 command_line: "systemd".to_string(),
@@ -34,6 +37,9 @@ fn correlator_prefers_non_protected_process_with_exact_path_hits() {
             },
             TrackedProcess {
                 pid: 42,
+                parent_pid: Some(1),
+                uid: Some(1000),
+                gid: Some(1000),
                 process_name: "python3".to_string(),
                 exe_path: "/usr/bin/python3".to_string(),
                 command_line: "python3 encrypt.py".to_string(),

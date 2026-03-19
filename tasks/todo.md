@@ -4,7 +4,7 @@
 - Based on `docs/06_BannKenn v2 Detection Design Review.md`
 
 ## Immediate Fixes
-- [ ] Stop repeated polling of `/var/log/auth.log` on hosts that use journald; prefer journal subscriptions and suppress missing-file warning spam.
+- [x] Stop repeated polling of `/var/log/auth.log` on hosts that use journald; prefer journal subscriptions and suppress missing-file warning spam.
 - [x] Lower the default sensitivity for rename burst and delete burst scoring, then back the new thresholds with regression coverage.
 - [x] Exclude `bannkenn-agent`, BannKenn-managed state paths, and internal sync/policy work from behavioral scoring.
 - [x] Record executable path, parent process, and enough event context on every flagged detection to explain why it fired.
@@ -17,7 +17,7 @@
 - [x] Verify the agent cannot become the top CPU consumer during an event storm.
 
 ## Phase 2: Attribution And Trust
-- [ ] Enrich collected events with PID, PPID, executable path, command line, UID/GID, timestamp, operation type, target path, rename extension changes, bytes written, and host/container context.
+- [x] Enrich collected events with PID, PPID, executable path, command line, UID/GID, timestamp, operation type, target path, rename extension changes, bytes written, and host/container context.
 - [ ] Build a process identity profile that tracks executable path, package owner, parent chain, service unit, first-seen time, and known-good classification.
 - [ ] Introduce a trust model with clear classes such as trusted system process, trusted package-managed process, allowed local process, unknown process, and suspicious process.
 - [ ] Add a policy-driven allowlist/baseline layer keyed by executable path, package name, service unit, container image, and maintenance window.
@@ -52,4 +52,8 @@
 - 2026-03-19: Immediate scoring and attribution fixes landed. Rename and delete burst defaults were lowered, repeated behavior uploads are now deduplicated on the agent, and trusted maintenance plus BannKenn-internal work are downgraded before they can flood incidents.
 - Behavior events now preserve parent process attribution through the agent upload path, server storage, incident timeline payloads, and the dashboard agent detail view so operators can see both the executable and its parent context.
 - Regression coverage for this pass includes scorer threshold tests, trust-suppression tests, agent-side dedup tests, server round-trip/archive checks for parent fields, and a dashboard production build.
+- Verification for this pass: `cargo test -p bannkenn-agent`, `cargo test -p bannkenn-server`, `cargo clippy -p bannkenn-agent -p bannkenn-server --tests -- -D warnings`, and `npm run build` in `dashboard/`.
+- 2026-03-19: Auth log watching now prefers a single `journalctl --follow` stream for legacy auth facilities on journald hosts, suppressing repeated missing-file polls while retaining file-tail fallback on non-journald systems or when `journalctl` cannot start.
+- 2026-03-19: Behavior-event attribution now preserves PPID, UID/GID, and container runtime/container ID from `/proc` through agent uploads, durable outbox replay, SQLite/Postgres storage, incident timeline payloads, and the dashboard agent detail view.
+- Regression coverage for this pass includes journald source-planning tests, `/proc/<pid>/status` parser coverage, agent outbox serialization round-trips for enriched behavior payloads, server behavior round-trips/archive checks for the new fields, and another dashboard production build.
 - Verification for this pass: `cargo test -p bannkenn-agent`, `cargo test -p bannkenn-server`, `cargo clippy -p bannkenn-agent -p bannkenn-server --tests -- -D warnings`, and `npm run build` in `dashboard/`.
