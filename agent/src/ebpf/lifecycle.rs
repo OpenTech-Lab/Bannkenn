@@ -10,6 +10,10 @@ pub struct TrackedProcess {
     pub process_name: String,
     pub exe_path: String,
     pub command_line: String,
+    pub parent_process_name: Option<String>,
+    pub parent_command_line: Option<String>,
+    pub container_runtime: Option<String>,
+    pub container_id: Option<String>,
     pub open_paths: HashSet<String>,
     pub protected: bool,
 }
@@ -138,6 +142,12 @@ fn inspect_process(
         return None;
     }
 
+    let parent_pid = read_parent_pid(proc_dir.join("status"));
+    let (parent_process_name, parent_command_line) = parent_pid
+        .and_then(inspect_parent_process)
+        .unwrap_or((None, None));
+    let (container_runtime, container_id) = read_container_context(proc_dir.join("cgroup"));
+
     let protected = pid == 1
         || matches_allowlist(&process_name, protected_pid_allowlist)
         || matches_allowlist(&exe_path, protected_pid_allowlist);
@@ -147,6 +157,10 @@ fn inspect_process(
         process_name,
         exe_path,
         command_line,
+        parent_process_name,
+        parent_command_line,
+        container_runtime,
+        container_id,
         open_paths,
         protected,
     })
@@ -257,70 +271,97 @@ fn read_cmdline(path: PathBuf) -> Option<String> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+fn read_parent_pid(path: PathBuf) -> Option<u32> {
+    let content = fs::read_to_string(path).ok()?;
+    content.lines().find_map(|line| {
+        let value = line.strip_prefix("PPid:")?.trim();
+        value.parse::<u32>().ok()
+    })
+}
 
-    fn tracked_process(pid: u32, process_name: &str, exe_path: &str) -> TrackedProcess {
-        TrackedProcess {
-            pid,
-            process_name: process_name.to_string(),
-            exe_path: exe_path.to_string(),
-            command_line: exe_path.to_string(),
-            open_paths: HashSet::from(["/srv/data/file.txt".to_string()]),
-            protected: false,
+fn inspect_parent_process(ppid: u32) -> Option<(Option<String>, Option<String>)> {
+    if ppid == 0 {
+        return None;
+    }
+
+    let proc_dir = PathBuf::from("/proc").join(ppid.to_string());
+    let process_name = read_trimmed_file(proc_dir.join("comm"));
+    let command_line = read_cmdline(proc_dir.join("cmdline"));
+    if process_name.is_none() && command_line.is_none() {
+        None
+    } else {
+        Some((process_name, command_line))
+    }
+}
+
+fn read_container_context(path: PathBuf) -> (Option<String>, Option<String>) {
+    let Ok(content) = fs::read_to_string(path) else {
+        return (None, None);
+    };
+
+    let mut runtime = None;
+    let mut container_id = None;
+
+    for line in content.lines() {
+        let lower = line.to_ascii_lowercase();
+        if runtime.is_none() {
+            runtime = if lower.contains("docker") {
+                Some("docker".to_string())
+            } else if lower.contains("containerd") || lower.contains("cri-containerd") {
+                Some("containerd".to_string())
+            } else if lower.contains("crio") {
+                Some("crio".to_string())
+            } else if lower.contains("kubepods") {
+                Some("kubernetes".to_string())
+            } else if lower.contains("libpod") || lower.contains("podman") {
+                Some("podman".to_string())
+            } else {
+                None
+            };
+        }
+
+        if container_id.is_none() {
+            container_id = extract_container_id(line);
+        }
+
+        if runtime.is_some() && container_id.is_some() {
+            break;
         }
     }
 
-    #[test]
-    fn lifecycle_diff_detects_exec_exit_and_reexec() {
-        let previous = HashMap::from([
-            (
-                10,
-                ProcessIdentity {
-                    process_name: "bash".to_string(),
-                    exe_path: "/usr/bin/bash".to_string(),
-                },
-            ),
-            (
-                20,
-                ProcessIdentity {
-                    process_name: "python3".to_string(),
-                    exe_path: "/usr/bin/python3".to_string(),
-                },
-            ),
-        ]);
-        let current = HashMap::from([
-            (20, tracked_process(20, "python3", "/usr/bin/python3.12")),
-            (30, tracked_process(30, "ransom", "/tmp/ransom")),
-        ]);
+    (runtime, container_id)
+}
 
-        let events = diff_lifecycle_events(&previous, &current);
-        assert!(events.contains(&LifecycleEvent::Exec {
-            pid: 20,
-            process_name: "python3".to_string(),
-            exe_path: "/usr/bin/python3.12".to_string(),
-        }));
-        assert!(events.contains(&LifecycleEvent::Exec {
-            pid: 30,
-            process_name: "ransom".to_string(),
-            exe_path: "/tmp/ransom".to_string(),
-        }));
-        assert!(events.contains(&LifecycleEvent::Exit {
-            pid: 10,
-            process_name: "bash".to_string(),
-        }));
+fn extract_container_id(value: &str) -> Option<String> {
+    value.split('/').find_map(parse_container_segment)
+}
+
+fn parse_container_segment(segment: &str) -> Option<String> {
+    let trimmed = segment.trim();
+    if trimmed.is_empty() {
+        return None;
     }
 
-    #[test]
-    fn allowlist_matching_is_case_insensitive() {
-        assert!(matches_allowlist(
-            "/usr/local/bin/BannKenn-Agent",
-            &["bannkenn-agent".to_string()]
-        ));
-        assert!(!matches_allowlist(
-            "/usr/bin/python3",
-            &["systemd".to_string()]
-        ));
+    let mut candidate = trimmed.trim_end_matches(".scope");
+    for prefix in ["docker-", "cri-containerd-", "libpod-", "crio-", "podman-"] {
+        if let Some(stripped) = candidate.strip_prefix(prefix) {
+            candidate = stripped;
+            break;
+        }
+    }
+
+    if is_container_id(candidate) {
+        Some(candidate.to_string())
+    } else {
+        None
     }
 }
+
+fn is_container_id(candidate: &str) -> bool {
+    let len = candidate.len();
+    len >= 12 && candidate.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+#[cfg(test)]
+#[path = "../../tests/unit/ebpf/lifecycle_tests.rs"]
+mod tests;

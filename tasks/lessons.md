@@ -218,12 +218,46 @@
 ### Top-level `How to use` sections should stay short
 - If the user asks for a quick usage section, keep it as a compact operator checklist rather than repeating the full README.
 - For this repo, the top-level `How to use` section should stay under 100 lines and focus on `.env`, `scripts/install.sh`, and `scripts/update-server.sh`.
+
+### Do not mark report recommendations complete when the implementation only covers part of the capability
+- If a report item depends on missing runtime metadata such as container lineage, exec-chain context, or masquerade checks, keep the task explicitly partial until that metadata exists in code.
+- Before closing a recommendation as "done", map each sub-capability in the report to the exact code path and test that proves it.
+- Prefer leaving a smaller set of completed checkboxes and a sharper backlog over overstating coverage in `tasks/todo.md` or handoff text.
+
+### Malware-trigger recommendations need per-signal tracking, not one umbrella checkbox
+- For sections like "stronger malware-specific triggers", do not collapse several distinct detections into one completed task just because one signal landed.
+- Track temp-write→exec, path/name mismatch, persistence, network follow-on, and miner-pattern triggers separately unless the code truly implements all of them.
 - If one setup mode is preferred, say that directly in the quick-start instead of making users infer it.
 
 ### Before starting the next phase, do the maintainability pass while the context is still fresh
 - If a large phase adds oversized files or growing inline tests, refactor them before starting the next phase instead of treating cleanup as optional follow-up.
 - Keep server tests in `server/tests/` with shared fixtures/modules rather than expanding `#[cfg(test)]` blocks inside production files.
 - Prefer thin binaries and domain-focused modules so the next upgrade extends existing seams instead of reopening monolith files.
+
+### Relocating Rust tests under `tests/` needs a real Cargo entrypoint, not only source-file `#[path]` hooks
+- Moving test bodies out of `src/` is only half the refactor; Cargo discovers integration tests from top-level files like `tests/unit.rs`, not from nested directories alone.
+- When externalizing a large Rust test tree, add the manifest test file in the same change and verify `cargo test --test <name>` runs it directly before calling the relocation complete.
+- If the goal is "tests live under `tests/`", prove the new files are wired as a discovered test binary instead of assuming `#[cfg(test)] #[path = ...] mod tests;` inside production modules is sufficient.
+
+### Formatting-only CI gates still need explicit `cargo fmt --all -- --check` verification
+- Do not assume `cargo fmt --all` touched every relocated test file correctly just because code compiled and clippy passed.
+- After moving or generating Rust test files, run `cargo fmt --all -- --check` explicitly and fix any remaining diffs before closing the task.
+- Treat formatter verification as separate from test and clippy verification in `tasks/todo.md`.
+
+### Runtime classifiers and ID parsers must evolve together
+- If one parser recognizes a platform-specific marker like `crio-<id>`, audit the paired metadata inference path so it emits the matching runtime label as well.
+- For container context in this repo, keep `container_runtime` and `container_id` extraction aligned across Docker, containerd, Podman, CRI-O, and Kubernetes cgroup variants.
+- Add a regression test for the exact cgroup shape reported in review whenever a new runtime prefix is supported.
+
+### Overlapping score suppressors must aggregate by component, not by reason bucket
+- If multiple benign contexts suppress the same rename/write/delete/throughput burst, compute suppression once per component and then attach all matching reasons.
+- Do not let independent "known benign" branches each subtract the full component set, or one process can be downgraded more than intended just because contexts overlap.
+- Add a regression test for at least one realistic overlap case whenever a new benign-context suppressor is introduced.
+
+### Short classifier markers need exact command-name matching, not substring scans
+- Markers like `sh`, `apt`, and `rpm` are too short for raw `contains()` checks across full process names or command lines; they will match unrelated names like `containerd-shim` or `capturer`.
+- For scorer-side helper/process/shell classification in this repo, compare normalized basenames and `argv[0]` command names exactly, and use a separate narrower matcher when runtime metadata needs token/segment matching.
+- Add regressions for at least one false-positive substring case whenever a new short marker is introduced.
 
 ### CI lint fixes need full workspace verification, not only the first reported warning
 - When GitHub Actions fails on an initial clippy warning, do not stop after patching the first printed lines; rerun `cargo clippy --workspace -- -D warnings` locally until the workspace is clean because later lints may be hidden behind the first failure.

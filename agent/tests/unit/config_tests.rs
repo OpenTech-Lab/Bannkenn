@@ -1,0 +1,92 @@
+use super::*;
+
+#[test]
+fn test_default_config() {
+    let config = AgentConfig::default();
+    assert_eq!(config.log_path, "/var/log/auth.log");
+    assert_eq!(config.threshold, 5);
+    assert_eq!(config.window_secs, 60);
+}
+
+#[test]
+fn test_config_serialization() {
+    let config = AgentConfig {
+        server_url: "http://localhost:8080".to_string(),
+        jwt_token: "token123".to_string(),
+        ca_cert_path: Some("/tmp/server-ca.pem".to_string()),
+        agent_name: "test-agent".to_string(),
+        uuid: "test-uuid".to_string(),
+        log_path: "/var/log/auth.log".to_string(),
+        log_paths: vec!["/var/log/auth.log".to_string()],
+        threshold: 3,
+        window_secs: 120,
+        butterfly_shield: None,
+        burst: None,
+        risk_level: None,
+        event_risk: None,
+        campaign: None,
+        mmdb_dir: None,
+        containment: Some(ContainmentConfig::default()),
+    };
+
+    let toml_str = toml::to_string(&config).unwrap();
+    let deserialized: AgentConfig = toml::from_str(&toml_str).unwrap();
+
+    assert_eq!(config.server_url, deserialized.server_url);
+    assert_eq!(config.jwt_token, deserialized.jwt_token);
+    assert_eq!(config.ca_cert_path, deserialized.ca_cert_path);
+    assert_eq!(config.threshold, deserialized.threshold);
+    assert_eq!(config.containment, deserialized.containment);
+}
+
+#[test]
+fn runtime_defaults_enable_campaign_when_missing() {
+    let config = AgentConfig::default().apply_runtime_detection_defaults();
+    let campaign = config
+        .campaign
+        .expect("runtime defaults should populate campaign config");
+    assert!(campaign.enabled);
+    assert_eq!(campaign.distinct_ips_threshold, 3);
+}
+
+#[test]
+fn runtime_defaults_populate_containment_config_without_enabling_it() {
+    let config = AgentConfig::default().apply_runtime_detection_defaults();
+    let containment = config
+        .containment
+        .expect("runtime defaults should populate containment config");
+    assert!(!containment.enabled);
+    assert!(containment.dry_run);
+    assert!(!containment.fuse_enabled);
+    assert_eq!(containment.suspicious_score, 30);
+    assert_eq!(containment.throttle_io_read_bps, 4 * 1024 * 1024);
+    assert_eq!(containment.throttle_io_write_bps, 1024 * 1024);
+    assert_eq!(containment.throttle_network_kbit, 1024);
+    assert_eq!(containment.management_allow_ports, vec![22]);
+    assert!(containment
+        .protected_pid_allowlist
+        .contains(&"bannkenn-agent".to_string()));
+}
+
+#[test]
+fn offline_agent_state_round_trips() {
+    let dir = std::env::temp_dir().join(format!("bannkenn-offline-state-{}", uuid::Uuid::new_v4()));
+    let path = dir.join("offline.toml");
+    let state = OfflineAgentState {
+        known_blocked_ips: HashMap::from([("203.0.113.10".to_string(), "agent".to_string())]),
+        whitelisted_ips: vec!["198.51.100.7".to_string()],
+        shared_risk_snapshot: SharedRiskSnapshot {
+            generated_at: "2026-03-10T00:00:00Z".to_string(),
+            window_secs: 600,
+            global_risk_score: 0.8,
+            global_threshold_multiplier: 0.6,
+            categories: Vec::new(),
+        },
+    };
+
+    state.save(&path).unwrap();
+    let loaded = OfflineAgentState::load(&path);
+    assert_eq!(loaded, state);
+
+    let _ = fs::remove_dir_all(dir);
+}

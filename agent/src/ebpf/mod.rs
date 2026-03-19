@@ -27,6 +27,7 @@ use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 
@@ -34,6 +35,7 @@ use tokio::time::{interval, Duration};
 use std::os::unix::fs::MetadataExt;
 
 const USERSPACE_SENSOR_SOURCE: &str = "userspace_polling";
+const LIFECYCLE_EXEC_SENSOR_SOURCE: &str = "lifecycle_exec";
 #[cfg(target_os = "linux")]
 const AYA_SENSOR_SOURCE: &str = "aya_ringbuf";
 #[cfg(target_os = "linux")]
@@ -60,6 +62,7 @@ const AYA_TRACE_ATTACHMENTS: &[(&str, &str, &str)] = &[
     ("bk_file_renameat2", "syscalls", "sys_enter_renameat2"),
     ("bk_file_unlinkat", "syscalls", "sys_enter_unlinkat"),
 ];
+const RECENT_TEMP_WRITE_WINDOW_SECS: u64 = 60;
 type BackendPollFuture<'a> = Pin<Box<dyn Future<Output = Result<BackendPollResult>> + Send + 'a>>;
 
 trait BehaviorSensorBackend: Send + std::fmt::Debug {
@@ -81,6 +84,7 @@ pub struct SensorManager {
     lifecycle: ProcessLifecycleTracker,
     correlator: ProcessCorrelator,
     scorer: CompositeBehaviorScorer,
+    recent_temp_writes: HashMap<String, RecentTempWrite>,
 }
 
 #[derive(Debug)]
@@ -135,6 +139,12 @@ struct FileSnapshot {
     path: PathBuf,
     len: u64,
     modified_ns: i128,
+}
+
+#[derive(Debug, Clone)]
+struct RecentTempWrite {
+    recorded_at: Instant,
+    watched_root: String,
 }
 
 impl Default for RawPathPrefixEntry {
@@ -196,6 +206,7 @@ impl SensorManager {
             lifecycle: ProcessLifecycleTracker::new(config),
             correlator: ProcessCorrelator::new(),
             scorer: CompositeBehaviorScorer::from_config(config),
+            recent_temp_writes: HashMap::new(),
         })
     }
 
@@ -221,6 +232,9 @@ impl SensorManager {
         let mut lifecycle = self.lifecycle.refresh().await?;
         let polled = self.backend.poll_batches(&self.protected_paths).await?;
         merge_lifecycle_events(&mut lifecycle.events, polled.lifecycle_events);
+        let now = Instant::now();
+        self.prune_recent_temp_writes(now);
+        self.record_temp_writes(&polled.batches, now);
 
         if !lifecycle.events.is_empty() {
             tracing::debug!(
@@ -231,7 +245,7 @@ impl SensorManager {
             );
         }
 
-        let mut events = Vec::new();
+        let mut events = self.build_temp_exec_events(&lifecycle);
         for batch in polled.batches {
             let correlation = self.correlator.correlate(&batch, &lifecycle);
             if correlation.process.is_none() && correlation.protected_hits > 0 {
@@ -245,6 +259,67 @@ impl SensorManager {
         }
 
         Ok(events)
+    }
+
+    fn prune_recent_temp_writes(&mut self, now: Instant) {
+        self.recent_temp_writes.retain(|_, entry| {
+            now.duration_since(entry.recorded_at)
+                <= Duration::from_secs(RECENT_TEMP_WRITE_WINDOW_SECS)
+        });
+    }
+
+    fn record_temp_writes(&mut self, batches: &[FileActivityBatch], now: Instant) {
+        for batch in batches {
+            if batch.file_ops.created == 0 && batch.file_ops.modified == 0 {
+                continue;
+            }
+
+            for path in batch.touched_paths.iter().filter(|path| is_temp_path(path)) {
+                self.recent_temp_writes.insert(
+                    path.clone(),
+                    RecentTempWrite {
+                        recorded_at: now,
+                        watched_root: batch.watched_root.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    fn build_temp_exec_events(
+        &self,
+        lifecycle: &crate::ebpf::lifecycle::LifecycleSnapshot,
+    ) -> Vec<BehaviorEvent> {
+        lifecycle
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                LifecycleEvent::Exec { pid, exe_path, .. } => {
+                    let process = lifecycle
+                        .processes
+                        .iter()
+                        .find(|proc_info| proc_info.pid == *pid)
+                        .map(process_info_from_tracked);
+                    let matched_path = process
+                        .as_ref()
+                        .map(|proc_info| proc_info.exe_path.as_str())
+                        .filter(|path| is_temp_path(path))
+                        .unwrap_or(exe_path);
+                    if !is_temp_path(matched_path) {
+                        return None;
+                    }
+                    let recent = self.recent_temp_writes.get(matched_path)?;
+                    Some(self.scorer.score_temp_exec_trigger(
+                        Utc::now(),
+                        LIFECYCLE_EXEC_SENSOR_SOURCE,
+                        &recent.watched_root,
+                        matched_path,
+                        process.as_ref(),
+                    ))
+                }
+                LifecycleEvent::Exit { .. } => None,
+            })
+            .collect()
     }
 }
 
@@ -632,6 +707,30 @@ fn build_activity_batch(
     })
 }
 
+fn process_info_from_tracked(
+    process: &crate::ebpf::lifecycle::TrackedProcess,
+) -> crate::ebpf::events::ProcessInfo {
+    crate::ebpf::events::ProcessInfo {
+        pid: process.pid,
+        process_name: process.process_name.clone(),
+        exe_path: process.exe_path.clone(),
+        command_line: process.command_line.clone(),
+        correlation_hits: 0,
+        parent_process_name: process.parent_process_name.clone(),
+        parent_command_line: process.parent_command_line.clone(),
+        container_runtime: process.container_runtime.clone(),
+        container_id: process.container_id.clone(),
+    }
+}
+
+fn is_temp_path(path: &str) -> bool {
+    let trimmed = path.trim();
+    trimmed == "/tmp"
+        || trimmed.starts_with("/tmp/")
+        || trimmed == "/var/tmp"
+        || trimmed.starts_with("/var/tmp/")
+}
+
 fn insert_touched_path(
     path: &Path,
     protected_paths: &[PathBuf],
@@ -741,114 +840,5 @@ fn record_snapshot(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::ContainmentConfig;
-    use crate::ebpf::events::{
-        BehaviorLevel, RAW_BEHAVIOR_EVENT_KIND_FILE_ACTIVITY, RAW_BEHAVIOR_EVENT_KIND_PROCESS_EXEC,
-    };
-
-    #[tokio::test]
-    async fn simulated_mass_rename_triggers_score_above_suspicious_threshold() {
-        let root = std::env::temp_dir().join(format!("bannkenn-phase1-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
-
-        let mut open_files = Vec::new();
-        for idx in 0..8 {
-            let path = root.join(format!("file-{}.txt", idx));
-            fs::write(&path, format!("payload-{}", idx)).unwrap();
-        }
-
-        let mut config = ContainmentConfig {
-            enabled: true,
-            watch_paths: vec![root.display().to_string()],
-            ..ContainmentConfig::default()
-        };
-        config
-            .protected_pid_allowlist
-            .retain(|entry| entry != "bannkenn-agent");
-        let mut sensor = SensorManager::from_config(&config).expect("sensor should be enabled");
-        assert!(
-            sensor.poll_once().await.unwrap().is_empty(),
-            "baseline poll"
-        );
-
-        for idx in 0..8 {
-            let from = root.join(format!("file-{}.txt", idx));
-            open_files.push(fs::File::open(&from).unwrap());
-            let to = root.join(format!("file-{}.locked", idx));
-            fs::rename(&from, &to).unwrap();
-        }
-
-        let events = sensor.poll_once().await.unwrap();
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-        assert!(event.file_ops.renamed >= 8);
-        assert!(event.score > 30);
-        assert_eq!(event.level, BehaviorLevel::Suspicious);
-        assert_eq!(event.pid, Some(std::process::id()));
-
-        drop(open_files);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn lifecycle_ring_events_are_translated_without_duplicate_pid_entries() {
-        let mut events = vec![LifecycleEvent::Exec {
-            pid: 44,
-            process_name: "python3".to_string(),
-            exe_path: "/usr/bin/python3".to_string(),
-        }];
-        let raw = RawBehaviorRingEvent {
-            pid: 44,
-            event_kind: RAW_BEHAVIOR_EVENT_KIND_PROCESS_EXEC,
-            bytes_written: 0,
-            created: 0,
-            modified: 0,
-            renamed: 0,
-            deleted: 0,
-            protected_path_touched: 0,
-            path_len: 0,
-            process_name_len: 7,
-            path: [0; RAW_BEHAVIOR_PATH_CAPACITY],
-            process_name: [0; crate::ebpf::events::RAW_BEHAVIOR_PROCESS_CAPACITY],
-        };
-        let mut raw = raw;
-        raw.process_name[..7].copy_from_slice(b"python3");
-
-        merge_lifecycle_events(
-            &mut events,
-            raw_ring_event_to_lifecycle_event(raw).into_iter(),
-        );
-        assert_eq!(events.len(), 1);
-    }
-
-    #[test]
-    fn file_activity_ring_events_ignore_lifecycle_translation() {
-        let raw = RawBehaviorRingEvent {
-            pid: 7,
-            event_kind: RAW_BEHAVIOR_EVENT_KIND_FILE_ACTIVITY,
-            bytes_written: 2048,
-            created: 0,
-            modified: 1,
-            renamed: 0,
-            deleted: 0,
-            protected_path_touched: 1,
-            path_len: 13,
-            process_name_len: 7,
-            path: [0; RAW_BEHAVIOR_PATH_CAPACITY],
-            process_name: [0; crate::ebpf::events::RAW_BEHAVIOR_PROCESS_CAPACITY],
-        };
-        let mut raw = raw;
-        raw.path[..13].copy_from_slice(b"/srv/data.txt");
-        raw.process_name[..7].copy_from_slice(b"python3");
-
-        assert!(raw_ring_event_to_lifecycle_event(raw).is_none());
-        let batch = raw_ring_event_to_batch(raw, &[PathBuf::from("/srv")], 1000).expect("batch");
-        assert_eq!(batch.bytes_written, 2048);
-        assert_eq!(
-            batch.protected_paths_touched,
-            vec!["/srv/data.txt".to_string()]
-        );
-    }
-}
+#[path = "../../tests/unit/ebpf/mod_tests.rs"]
+mod tests;

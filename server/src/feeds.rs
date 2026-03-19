@@ -11,9 +11,7 @@ pub async fn fetch_ipsum_feed(db: Arc<Db>) -> anyhow::Result<()> {
 
     let response =
         reqwest::get("https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.txt").await?;
-    let stream = response
-        .bytes_stream()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+    let stream = response.bytes_stream().map_err(std::io::Error::other);
     let mut lines = BufReader::new(StreamReader::new(stream)).lines();
 
     while let Some(line) = lines.next_line().await? {
@@ -47,9 +45,7 @@ async fn fetch_firehol_feed(db: Arc<Db>, url: &str, source: &str) -> anyhow::Res
     info!("Fetching FireHOL feed: {}", source);
 
     let response = reqwest::get(url).await?;
-    let stream = response
-        .bytes_stream()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+    let stream = response.bytes_stream().map_err(std::io::Error::other);
     let mut lines = BufReader::new(StreamReader::new(stream)).lines();
 
     while let Some(line) = lines.next_line().await? {
@@ -59,7 +55,10 @@ async fn fetch_firehol_feed(db: Arc<Db>, url: &str, source: &str) -> anyhow::Res
         }
         match db.insert_decision(&trimmed, source, "block", source).await {
             Ok(Some(_)) => {}
-            Ok(None) => info!("Skipping whitelisted entry from {} feed: {}", source, trimmed),
+            Ok(None) => info!(
+                "Skipping whitelisted entry from {} feed: {}",
+                source, trimmed
+            ),
             Err(e) => {
                 error!("Failed to insert decision for {}: {}", trimmed, e);
             }
