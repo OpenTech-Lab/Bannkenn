@@ -26,6 +26,8 @@ async fn behavior_events_round_trip_structured_payloads() {
     assert_eq!(rows[0].agent_name, "agent-a");
     assert_eq!(rows[0].file_ops.renamed, 3);
     assert_eq!(rows[0].protected_paths_touched.len(), 1);
+    assert_eq!(rows[0].parent_process_name.as_deref(), Some("systemd"));
+    assert_eq!(rows[0].parent_command_line.as_deref(), Some("systemd"));
     assert_eq!(rows[0].level, "throttle_candidate");
 
     let agent_rows = db

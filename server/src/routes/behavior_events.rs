@@ -25,6 +25,8 @@ pub struct CreateBehaviorEventRequest {
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
+    pub parent_process_name: Option<String>,
+    pub parent_command_line: Option<String>,
     pub correlation_hits: u32,
     pub file_ops: BehaviorFileOpsRow,
     #[serde(default)]
@@ -71,6 +73,12 @@ pub async fn create(
         exe_path: payload.exe_path,
         command_line: payload
             .command_line
+            .map(|s| cap_string(s, MAX_STRING_BYTES)),
+        parent_process_name: payload
+            .parent_process_name
+            .map(|s| cap_string(s, MAX_STRING_BYTES)),
+        parent_command_line: payload
+            .parent_command_line
             .map(|s| cap_string(s, MAX_STRING_BYTES)),
         correlation_hits: payload.correlation_hits,
         file_ops: payload.file_ops,

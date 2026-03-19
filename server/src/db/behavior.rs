@@ -52,6 +52,8 @@ impl Db {
             "process_name": &event.process_name,
             "exe_path": &event.exe_path,
             "command_line": &event.command_line,
+            "parent_process_name": &event.parent_process_name,
+            "parent_command_line": &event.parent_command_line,
             "correlation_hits": event.correlation_hits,
             "file_ops": &event.file_ops,
             "touched_paths": &event.touched_paths,
@@ -156,6 +158,8 @@ impl Db {
                 process_name,
                 exe_path,
                 command_line,
+                parent_process_name,
+                parent_command_line,
                 correlation_hits,
                 file_ops_created,
                 file_ops_modified,
@@ -170,7 +174,7 @@ impl Db {
                 level,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(incident_id)
@@ -181,6 +185,8 @@ impl Db {
         .bind(&event.process_name)
         .bind(&event.exe_path)
         .bind(&event.command_line)
+        .bind(&event.parent_process_name)
+        .bind(&event.parent_command_line)
         .bind(i64::from(event.correlation_hits))
         .bind(i64::from(event.file_ops.created))
         .bind(i64::from(event.file_ops.modified))
@@ -215,6 +221,8 @@ impl Db {
                 process_name,
                 exe_path,
                 command_line,
+                parent_process_name,
+                parent_command_line,
                 correlation_hits,
                 file_ops_created,
                 file_ops_modified,
@@ -266,6 +274,8 @@ impl Db {
                 process_name,
                 exe_path,
                 command_line,
+                parent_process_name,
+                parent_command_line,
                 correlation_hits,
                 file_ops_created,
                 file_ops_modified,
@@ -310,6 +320,8 @@ fn map_behavior_event_row(row: sqlx::sqlite::SqliteRow) -> anyhow::Result<Behavi
         process_name: row.try_get("process_name")?,
         exe_path: row.try_get("exe_path")?,
         command_line: row.try_get("command_line")?,
+        parent_process_name: row.try_get("parent_process_name")?,
+        parent_command_line: row.try_get("parent_command_line")?,
         correlation_hits: from_i64_u32(
             row.try_get("correlation_hits")?,
             "behavior_events.correlation_hits",

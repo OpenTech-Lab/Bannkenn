@@ -468,8 +468,21 @@ export function AgentDetailPage() {
                       <TableBody>
                         {behaviorEvents.map((event) => (
                           <TableRow key={event.id}>
-                            <TableCell className="max-w-[160px] truncate font-medium text-white">
-                              {event.process_name ?? event.exe_path ?? 'unknown'}
+                            <TableCell className="max-w-[240px]">
+                              <div className="space-y-1">
+                                <p className="truncate font-medium text-white">
+                                  {event.process_name ?? event.exe_path ?? 'unknown'}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  exe: {event.exe_path ?? 'unknown'}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  parent:{' '}
+                                  {event.parent_process_name ??
+                                    event.parent_command_line ??
+                                    'unknown'}
+                                </p>
+                              </div>
                             </TableCell>
                             <TableCell>
                               <Badge

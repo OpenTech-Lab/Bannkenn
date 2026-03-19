@@ -5,11 +5,11 @@
 
 ## Immediate Fixes
 - [ ] Stop repeated polling of `/var/log/auth.log` on hosts that use journald; prefer journal subscriptions and suppress missing-file warning spam.
-- [ ] Lower the default sensitivity for rename burst and delete burst scoring, then back the new thresholds with regression coverage.
-- [ ] Exclude `bannkenn-agent`, BannKenn-managed state paths, and internal sync/policy work from behavioral scoring.
-- [ ] Record executable path, parent process, and enough event context on every flagged detection to explain why it fired.
-- [ ] Seed default trust exceptions or policy entries for `fwupd`, `snapd`, `apt`, `dpkg`, `systemd`, and related maintenance processes.
-- [ ] Deduplicate repeated alerts so one root cause does not flood the dashboard or logs.
+- [x] Lower the default sensitivity for rename burst and delete burst scoring, then back the new thresholds with regression coverage.
+- [x] Exclude `bannkenn-agent`, BannKenn-managed state paths, and internal sync/policy work from behavioral scoring.
+- [x] Record executable path, parent process, and enough event context on every flagged detection to explain why it fired.
+- [x] Seed default trust exceptions or policy entries for `fwupd`, `snapd`, `apt`, `dpkg`, `systemd`, and related maintenance processes.
+- [x] Deduplicate repeated alerts so one root cause does not flood the dashboard or logs.
 
 ## Phase 1: Stabilization
 - [x] Reduce agent CPU usage with batching, bounded queues, caching, debounce windows, and backpressure instead of high-frequency polling.
@@ -49,3 +49,7 @@
 - 2026-03-19: Phase 1 stabilization landed in the agent with idle-scan backoff for userspace containment polling, per-poll file-activity batch coalescing, capped Aya ring-buffer draining, and rate-limited missing-path/read warnings in the log watcher.
 - Verification for this pass: `cargo test -p bannkenn-agent` and `cargo clippy -p bannkenn-agent --tests -- -D warnings`.
 - Remaining runtime validation: live-host CPU benchmarking and journald-first end-to-end behavior are still tracked in the `Verification` section above.
+- 2026-03-19: Immediate scoring and attribution fixes landed. Rename and delete burst defaults were lowered, repeated behavior uploads are now deduplicated on the agent, and trusted maintenance plus BannKenn-internal work are downgraded before they can flood incidents.
+- Behavior events now preserve parent process attribution through the agent upload path, server storage, incident timeline payloads, and the dashboard agent detail view so operators can see both the executable and its parent context.
+- Regression coverage for this pass includes scorer threshold tests, trust-suppression tests, agent-side dedup tests, server round-trip/archive checks for parent fields, and a dashboard production build.
+- Verification for this pass: `cargo test -p bannkenn-agent`, `cargo test -p bannkenn-server`, `cargo clippy -p bannkenn-agent -p bannkenn-server --tests -- -D warnings`, and `npm run build` in `dashboard/`.

@@ -30,6 +30,8 @@ export type BehaviorEvent = {
   process_name?: string | null;
   exe_path?: string | null;
   command_line?: string | null;
+  parent_process_name?: string | null;
+  parent_command_line?: string | null;
   correlation_hits: number;
   file_ops: BehaviorFileOps;
   touched_paths: string[];

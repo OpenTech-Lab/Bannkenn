@@ -85,6 +85,15 @@ struct ScoreAdjustment {
     reasons: Vec<String>,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ScoreComponents {
+    protected_path: u32,
+    rename: u32,
+    write: u32,
+    delete: u32,
+    throughput: u32,
+}
+
 pub trait Scorer {
     fn score(&self, batch: &FileActivityBatch, correlation: &CorrelationResult) -> BehaviorEvent;
 }
@@ -147,11 +156,7 @@ impl CompositeBehaviorScorer {
         &self,
         batch: &FileActivityBatch,
         process: Option<&ProcessInfo>,
-        protected_path_component: u32,
-        rename_component: u32,
-        write_component: u32,
-        delete_component: u32,
-        throughput_component: u32,
+        components: ScoreComponents,
     ) -> ScoreAdjustment {
         let Some(process) = process else {
             return ScoreAdjustment::default();
@@ -185,23 +190,23 @@ impl CompositeBehaviorScorer {
         let suppress_protected_path = trusted_maintenance_activity || agent_internal_activity;
 
         if suppress_rename {
-            adjustment.penalty = adjustment.penalty.saturating_add(rename_component);
+            adjustment.penalty = adjustment.penalty.saturating_add(components.rename);
         }
 
         if suppress_write {
-            adjustment.penalty = adjustment.penalty.saturating_add(write_component);
+            adjustment.penalty = adjustment.penalty.saturating_add(components.write);
         }
 
         if suppress_delete {
-            adjustment.penalty = adjustment.penalty.saturating_add(delete_component);
+            adjustment.penalty = adjustment.penalty.saturating_add(components.delete);
         }
 
         if suppress_throughput {
-            adjustment.penalty = adjustment.penalty.saturating_add(throughput_component);
+            adjustment.penalty = adjustment.penalty.saturating_add(components.throughput);
         }
 
         if suppress_protected_path {
-            adjustment.penalty = adjustment.penalty.saturating_add(protected_path_component);
+            adjustment.penalty = adjustment.penalty.saturating_add(components.protected_path);
         }
 
         if known_java_temp_extraction {
@@ -287,8 +292,10 @@ impl CompositeBehaviorScorer {
             process_name: process.map(|proc_info| proc_info.process_name.clone()),
             exe_path: process.map(|proc_info| proc_info.exe_path.clone()),
             command_line: process.map(|proc_info| proc_info.command_line.clone()),
-            parent_process_name: process.and_then(|proc_info| proc_info.parent_process_name.clone()),
-            parent_command_line: process.and_then(|proc_info| proc_info.parent_command_line.clone()),
+            parent_process_name: process
+                .and_then(|proc_info| proc_info.parent_process_name.clone()),
+            parent_command_line: process
+                .and_then(|proc_info| proc_info.parent_command_line.clone()),
             correlation_hits: process
                 .map(|proc_info| proc_info.correlation_hits)
                 .unwrap_or(0),
@@ -365,11 +372,13 @@ impl Scorer for CompositeBehaviorScorer {
         let adjustment = self.context_adjustment(
             batch,
             process,
-            protected_path_component,
-            rename_component,
-            write_component,
-            delete_component,
-            throughput_component,
+            ScoreComponents {
+                protected_path: protected_path_component,
+                rename: rename_component,
+                write: write_component,
+                delete: delete_component,
+                throughput: throughput_component,
+            },
         );
         score = score
             .saturating_sub(adjustment.penalty)
@@ -385,8 +394,10 @@ impl Scorer for CompositeBehaviorScorer {
             process_name: process.map(|proc_info| proc_info.process_name.clone()),
             exe_path: process.map(|proc_info| proc_info.exe_path.clone()),
             command_line: process.map(|proc_info| proc_info.command_line.clone()),
-            parent_process_name: process.and_then(|proc_info| proc_info.parent_process_name.clone()),
-            parent_command_line: process.and_then(|proc_info| proc_info.parent_command_line.clone()),
+            parent_process_name: process
+                .and_then(|proc_info| proc_info.parent_process_name.clone()),
+            parent_command_line: process
+                .and_then(|proc_info| proc_info.parent_command_line.clone()),
             correlation_hits: process
                 .map(|proc_info| proc_info.correlation_hits)
                 .unwrap_or(0),
@@ -439,7 +450,7 @@ fn batch_touches_only_paths(batch: &FileActivityBatch, prefixes: &[&str]) -> boo
         .chain(batch.protected_paths_touched.iter())
     {
         saw_path = true;
-        if !path_matches_any_prefix(path, prefixes) && !is_temp_path(path) {
+        if !path_matches_any_prefix(path, prefixes) {
             return false;
         }
     }
@@ -447,7 +458,7 @@ fn batch_touches_only_paths(batch: &FileActivityBatch, prefixes: &[&str]) -> boo
     if saw_path {
         true
     } else {
-        path_matches_any_prefix(&batch.watched_root, prefixes) || is_temp_path(&batch.watched_root)
+        path_matches_any_prefix(&batch.watched_root, prefixes)
     }
 }
 

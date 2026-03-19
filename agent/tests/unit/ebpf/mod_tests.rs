@@ -12,7 +12,7 @@ async fn simulated_mass_rename_triggers_score_above_suspicious_threshold() {
     fs::create_dir_all(&root).unwrap();
 
     let mut open_files = Vec::new();
-    for idx in 0..8 {
+    for idx in 0..11 {
         let path = root.join(format!("file-{}.txt", idx));
         fs::write(&path, format!("payload-{}", idx)).unwrap();
     }
@@ -31,7 +31,7 @@ async fn simulated_mass_rename_triggers_score_above_suspicious_threshold() {
         "baseline poll"
     );
 
-    for idx in 0..8 {
+    for idx in 0..11 {
         let from = root.join(format!("file-{}.txt", idx));
         open_files.push(fs::File::open(&from).unwrap());
         let to = root.join(format!("file-{}.locked", idx));
@@ -41,8 +41,15 @@ async fn simulated_mass_rename_triggers_score_above_suspicious_threshold() {
     let events = sensor.poll_once().await.unwrap();
     assert_eq!(events.len(), 1);
     let event = &events[0];
-    assert!(event.file_ops.renamed >= 8);
-    assert!(event.score > 30);
+    assert!(event.file_ops.renamed >= 11);
+    assert!(
+        event.score > 30,
+        "score={} reasons={:?} process={:?} exe={:?}",
+        event.score,
+        event.reasons,
+        event.process_name,
+        event.exe_path
+    );
     assert_eq!(event.level, BehaviorLevel::Suspicious);
     assert_eq!(event.pid, Some(std::process::id()));
 

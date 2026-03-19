@@ -21,6 +21,8 @@ pub fn sample_behavior_event(
         process_name: Some("python3".to_string()),
         exe_path: Some("/usr/bin/python3".to_string()),
         command_line: Some("python3 encrypt.py".to_string()),
+        parent_process_name: Some("systemd".to_string()),
+        parent_command_line: Some("systemd".to_string()),
         correlation_hits: 3,
         file_ops: BehaviorFileOpsRow {
             created: 1,

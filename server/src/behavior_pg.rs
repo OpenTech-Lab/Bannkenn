@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS behavior_events_archive (
     process_name TEXT,
     exe_path TEXT,
     command_line TEXT,
+    parent_process_name TEXT,
+    parent_command_line TEXT,
     correlation_hits BIGINT NOT NULL,
     file_ops_created BIGINT NOT NULL,
     file_ops_modified BIGINT NOT NULL,
@@ -65,6 +67,8 @@ pub struct BehaviorArchiveRecord {
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
+    pub parent_process_name: Option<String>,
+    pub parent_command_line: Option<String>,
     pub correlation_hits: u32,
     pub file_ops_created: u32,
     pub file_ops_modified: u32,
@@ -97,6 +101,8 @@ impl BehaviorArchiveRecord {
             process_name: event.process_name.clone(),
             exe_path: event.exe_path.clone(),
             command_line: event.command_line.clone(),
+            parent_process_name: event.parent_process_name.clone(),
+            parent_command_line: event.parent_command_line.clone(),
             correlation_hits: event.correlation_hits,
             file_ops_created: event.file_ops.created,
             file_ops_modified: event.file_ops.modified,
@@ -132,6 +138,16 @@ impl BehaviorPgArchive {
         sqlx::query(CREATE_BEHAVIOR_ARCHIVE_SQL)
             .execute(&self.pool)
             .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS parent_process_name TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS parent_command_line TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
         for statement in BEHAVIOR_ARCHIVE_INDEXES {
             sqlx::query(statement).execute(&self.pool).await?;
         }
@@ -151,6 +167,8 @@ impl BehaviorPgArchive {
                 process_name,
                 exe_path,
                 command_line,
+                parent_process_name,
+                parent_command_line,
                 correlation_hits,
                 file_ops_created,
                 file_ops_modified,
@@ -167,7 +185,7 @@ impl BehaviorPgArchive {
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                $15, $16, $17, $18, $19, $20, $21, $22
+                $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
             )
             ON CONFLICT (sqlite_event_id) DO NOTHING
             "#,
@@ -181,6 +199,8 @@ impl BehaviorPgArchive {
         .bind(&record.process_name)
         .bind(&record.exe_path)
         .bind(&record.command_line)
+        .bind(&record.parent_process_name)
+        .bind(&record.parent_command_line)
         .bind(i64::from(record.correlation_hits))
         .bind(i64::from(record.file_ops_created))
         .bind(i64::from(record.file_ops_modified))

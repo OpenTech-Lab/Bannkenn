@@ -35,6 +35,8 @@ fn archive_record_preserves_ingested_behavior_fields() {
     assert_eq!(record.sqlite_event_id, 17);
     assert_eq!(record.incident_id, 5);
     assert_eq!(record.file_ops_renamed, 4);
+    assert_eq!(record.parent_process_name.as_deref(), Some("systemd"));
+    assert_eq!(record.parent_command_line.as_deref(), Some("systemd"));
     assert_eq!(record.level, "fuse_candidate");
     assert!(record.reasons_json.contains("rename burst x4"));
 }

@@ -68,7 +68,13 @@ fn mass_rename_scores_as_suspicious() {
     };
 
     let event = scorer.score(&batch, &correlation);
-    assert_eq!(event.level, BehaviorLevel::Suspicious);
+    assert_eq!(
+        event.level,
+        BehaviorLevel::Suspicious,
+        "score={} reasons={:?}",
+        event.score,
+        event.reasons
+    );
     assert!(event.score > 30);
 }
 
@@ -420,17 +426,31 @@ fn overlapping_benign_contexts_do_not_double_subtract_the_same_components() {
     let adjustment = scorer.context_adjustment(
         &batch,
         Some(&proc),
-        0,
-        effective_burst_score(batch.file_ops.renamed, RENAME_BURST_GRACE, scorer.rename_score),
-        batch.file_ops.modified.saturating_mul(scorer.write_score),
-        effective_burst_score(batch.file_ops.deleted, DELETE_BURST_GRACE, scorer.delete_score),
-        (batch.bytes_written / scorer.bytes_per_score).min(u64::from(u32::MAX)) as u32,
+        ScoreComponents {
+            protected_path: 0,
+            rename: effective_burst_score(
+                batch.file_ops.renamed,
+                RENAME_BURST_GRACE,
+                scorer.rename_score,
+            ),
+            write: batch.file_ops.modified.saturating_mul(scorer.write_score),
+            delete: effective_burst_score(
+                batch.file_ops.deleted,
+                DELETE_BURST_GRACE,
+                scorer.delete_score,
+            ),
+            throughput: (batch.bytes_written / scorer.bytes_per_score).min(u64::from(u32::MAX))
+                as u32,
+        },
     );
 
     assert_eq!(
         adjustment.penalty,
-        effective_burst_score(batch.file_ops.renamed, RENAME_BURST_GRACE, scorer.rename_score)
-            + batch.file_ops.modified.saturating_mul(scorer.write_score)
+        effective_burst_score(
+            batch.file_ops.renamed,
+            RENAME_BURST_GRACE,
+            scorer.rename_score
+        ) + batch.file_ops.modified.saturating_mul(scorer.write_score)
             + effective_burst_score(
                 batch.file_ops.deleted,
                 DELETE_BURST_GRACE,
@@ -453,7 +473,7 @@ fn temp_path_executable_gets_extra_suspicion() {
     let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
     let batch = batch_with_ops(
         FileOperationCounts {
-            modified: 3,
+            modified: 5,
             deleted: 2,
             ..Default::default()
         },
@@ -472,11 +492,20 @@ fn temp_path_executable_gets_extra_suspicion() {
 
     let event = scorer.score(&batch, &correlation);
 
-    assert_eq!(event.level, BehaviorLevel::Suspicious);
+    assert!(
+        event.level == BehaviorLevel::Suspicious,
+        "score={} reasons={:?}",
+        event.score,
+        event.reasons
+    );
     assert!(event
         .reasons
         .iter()
         .any(|reason| reason == "temp-path executable"));
+    assert!(!event
+        .reasons
+        .iter()
+        .any(|reason| reason == "agent internal activity"));
     assert!(event.score >= 30);
 }
 
