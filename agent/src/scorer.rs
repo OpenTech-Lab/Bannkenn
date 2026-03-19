@@ -1,6 +1,10 @@
 use crate::config::ContainmentConfig;
 use crate::correlator::CorrelationResult;
-use crate::ebpf::events::{BehaviorEvent, BehaviorLevel, FileActivityBatch, ProcessInfo};
+use crate::ebpf::events::{
+    BehaviorEvent, BehaviorLevel, FileActivityBatch, FileOperationCounts, ProcessInfo,
+};
+use chrono::{DateTime, Utc};
+use std::path::Path;
 
 const TEMP_ROOTS: &[&str] = &["/tmp", "/var/tmp"];
 const PACKAGE_HELPER_PATTERNS: &[&str] = &[
@@ -111,6 +115,7 @@ impl CompositeBehaviorScorer {
         let package_manager_helper_activity = is_package_manager_helper_activity(process, batch);
         let containerized_service_temp_activity =
             is_containerized_service_temp_activity(process, batch);
+        let process_name_mismatch = has_process_name_mismatch(process);
 
         if known_java_temp_extraction {
             adjustment.penalty = adjustment
@@ -158,7 +163,57 @@ impl CompositeBehaviorScorer {
             adjustment.reasons.push("temp-path executable".to_string());
         }
 
+        if process_name_mismatch {
+            adjustment.bonus = adjustment.bonus.saturating_add(self.protected_path_bonus);
+            adjustment
+                .reasons
+                .push("process name/executable mismatch".to_string());
+        }
+
         adjustment
+    }
+
+    pub fn score_temp_exec_trigger(
+        &self,
+        timestamp: DateTime<Utc>,
+        source: &str,
+        watched_root: &str,
+        matched_path: &str,
+        process: Option<&ProcessInfo>,
+    ) -> BehaviorEvent {
+        let mut score = self.suspicious_score;
+        let mut reasons = vec![
+            "temp write followed by execve".to_string(),
+            "temp-path executable".to_string(),
+        ];
+
+        if let Some(process) = process {
+            if has_process_name_mismatch(process) {
+                score = score.saturating_add(self.protected_path_bonus);
+                reasons.push("process name/executable mismatch".to_string());
+            }
+        }
+
+        BehaviorEvent {
+            timestamp,
+            source: source.to_string(),
+            watched_root: watched_root.to_string(),
+            pid: process.map(|proc_info| proc_info.pid),
+            process_name: process.map(|proc_info| proc_info.process_name.clone()),
+            exe_path: process.map(|proc_info| proc_info.exe_path.clone()),
+            command_line: process.map(|proc_info| proc_info.command_line.clone()),
+            correlation_hits: process
+                .map(|proc_info| proc_info.correlation_hits)
+                .unwrap_or(0),
+            file_ops: FileOperationCounts::default(),
+            touched_paths: vec![matched_path.to_string()],
+            protected_paths_touched: Vec::new(),
+            bytes_written: 0,
+            io_rate_bytes_per_sec: 0,
+            score,
+            reasons,
+            level: self.classify_level(score),
+        }
     }
 }
 
@@ -331,6 +386,31 @@ fn is_trusted_system_executable(path: &str) -> bool {
 fn contains_any_ascii_case_insensitive(value: &str, patterns: &[&str]) -> bool {
     let lower = value.to_ascii_lowercase();
     patterns.iter().any(|pattern| lower.contains(pattern))
+}
+
+fn has_process_name_mismatch(process: &ProcessInfo) -> bool {
+    let process_name = normalize_process_name(&process.process_name);
+    let exe_name = Path::new(&process.exe_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(normalize_process_name)
+        .unwrap_or_default();
+
+    if process_name.is_empty() || exe_name.is_empty() {
+        return false;
+    }
+
+    process_name != exe_name
+        && !process_name.contains(&exe_name)
+        && !exe_name.contains(&process_name)
+}
+
+fn normalize_process_name(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 #[cfg(test)]
@@ -558,5 +638,65 @@ mod tests {
             .iter()
             .any(|reason| reason == "temp-path executable"));
         assert!(event.score >= 30);
+    }
+
+    #[test]
+    fn process_name_mismatch_adds_bonus() {
+        let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+        let batch = FileActivityBatch {
+            timestamp: Utc::now(),
+            source: "userspace_polling".to_string(),
+            watched_root: "/srv/data".to_string(),
+            poll_interval_ms: 1000,
+            file_ops: FileOperationCounts {
+                modified: 7,
+                ..Default::default()
+            },
+            touched_paths: vec!["/srv/data/file.txt".to_string()],
+            protected_paths_touched: Vec::new(),
+            bytes_written: 0,
+            io_rate_bytes_per_sec: 0,
+        };
+        let correlation = CorrelationResult {
+            process: Some(process(
+                90,
+                "sshd",
+                "/usr/bin/python3",
+                "/usr/bin/python3 /tmp/dropper.py",
+            )),
+            protected_hits: 0,
+        };
+
+        let event = scorer.score(&batch, &correlation);
+
+        assert_eq!(event.level, BehaviorLevel::Suspicious);
+        assert!(event
+            .reasons
+            .iter()
+            .any(|reason| reason == "process name/executable mismatch"));
+    }
+
+    #[test]
+    fn temp_exec_trigger_starts_at_suspicious_and_includes_mismatch_when_present() {
+        let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+        let proc = process(91, "cron", "/tmp/payload", "/tmp/payload --run");
+
+        let event = scorer.score_temp_exec_trigger(
+            Utc::now(),
+            "aya_ringbuf",
+            "/tmp",
+            "/tmp/payload",
+            Some(&proc),
+        );
+
+        assert_eq!(event.level, BehaviorLevel::Suspicious);
+        assert!(event
+            .reasons
+            .iter()
+            .any(|reason| reason == "temp write followed by execve"));
+        assert!(event
+            .reasons
+            .iter()
+            .any(|reason| reason == "process name/executable mismatch"));
     }
 }

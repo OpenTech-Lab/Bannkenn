@@ -1,5 +1,24 @@
 # tasks
 
+## Done: Malware-specific trigger follow-up from 15.6 review
+
+### Scope
+- [x] Add temp-write followed by `execve` detection for the same temp path
+- [x] Add process-name / executable-path mismatch weighting for masquerade detection
+- [x] Add regression coverage for both new triggers
+- [x] Re-review the remaining 15.6 gaps after implementation
+
+### Notes
+- Review correction: only the temp-path executable bonus was implemented; the rest of 15.6 was still missing.
+- Current target: ship the two highest-signal triggers the existing lifecycle model can support cleanly without inventing network or persistence telemetry.
+- Remaining 15.6 gaps after this patch: temp-write followed by outbound network, persistence after temp staging, and miner command-line / stratum detection are still open.
+
+### Review
+- Added recent temp-write tracking plus a synthetic `temp write followed by execve` behavior event in the eBPF sensor manager.
+- Added process-name / executable-path mismatch weighting in the containment scorer.
+- Verification: `cargo clippy --workspace -- -D warnings` passed.
+- Verification: `cargo test --workspace` passed.
+
 ## Done: Workspace clippy hardening
 
 ### Scope
@@ -25,7 +44,7 @@
 ### Notes
 - Review correction: sections 15.5 and most of 15.6 were still missing; 15.2 and 15.4 were only partial.
 - Goal: close the highest-priority gap called out in review without pretending Phase 2/3 work is complete.
-- Remaining partial work after this patch: masquerade detection, exec-chain tracking, and network correlation are still not implemented.
+- Remaining partial work after this patch: exec-chain/network correlation beyond temp-write→exec, persistence creation after temp staging, and miner-pattern detection are still not implemented.
 
 ## Done: Recreate follow-up tasks from `docs/05_Technical Investigation Report.md`
 
@@ -42,7 +61,7 @@
 - [x] Known-runtime temp extraction downgrade for Java/OpenSearch/Solr JNI extraction patterns
 - [x] Improve handling of `unknown process activity` so incomplete attribution is not treated as strong suspicion by itself
 - [x] Add stronger malware-specific temp-path executable weighting
-- [ ] Add process-name / executable-path mismatch weighting for masquerade detection
+- [x] Add process-name / executable-path mismatch weighting for masquerade detection
 - [ ] Evaluate future container-aware lineage enrichment beyond the current process snapshot model
 
 ### Current implementation target

@@ -223,6 +223,10 @@
 - If a report item depends on missing runtime metadata such as container lineage, exec-chain context, or masquerade checks, keep the task explicitly partial until that metadata exists in code.
 - Before closing a recommendation as "done", map each sub-capability in the report to the exact code path and test that proves it.
 - Prefer leaving a smaller set of completed checkboxes and a sharper backlog over overstating coverage in `tasks/todo.md` or handoff text.
+
+### Malware-trigger recommendations need per-signal tracking, not one umbrella checkbox
+- For sections like "stronger malware-specific triggers", do not collapse several distinct detections into one completed task just because one signal landed.
+- Track temp-write→exec, path/name mismatch, persistence, network follow-on, and miner-pattern triggers separately unless the code truly implements all of them.
 - If one setup mode is preferred, say that directly in the quick-start instead of making users infer it.
 
 ### Before starting the next phase, do the maintainability pass while the context is still fresh

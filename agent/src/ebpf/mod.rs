@@ -27,6 +27,7 @@ use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 
@@ -34,6 +35,7 @@ use tokio::time::{interval, Duration};
 use std::os::unix::fs::MetadataExt;
 
 const USERSPACE_SENSOR_SOURCE: &str = "userspace_polling";
+const LIFECYCLE_EXEC_SENSOR_SOURCE: &str = "lifecycle_exec";
 #[cfg(target_os = "linux")]
 const AYA_SENSOR_SOURCE: &str = "aya_ringbuf";
 #[cfg(target_os = "linux")]
@@ -60,6 +62,7 @@ const AYA_TRACE_ATTACHMENTS: &[(&str, &str, &str)] = &[
     ("bk_file_renameat2", "syscalls", "sys_enter_renameat2"),
     ("bk_file_unlinkat", "syscalls", "sys_enter_unlinkat"),
 ];
+const RECENT_TEMP_WRITE_WINDOW_SECS: u64 = 60;
 type BackendPollFuture<'a> = Pin<Box<dyn Future<Output = Result<BackendPollResult>> + Send + 'a>>;
 
 trait BehaviorSensorBackend: Send + std::fmt::Debug {
@@ -81,6 +84,7 @@ pub struct SensorManager {
     lifecycle: ProcessLifecycleTracker,
     correlator: ProcessCorrelator,
     scorer: CompositeBehaviorScorer,
+    recent_temp_writes: HashMap<String, RecentTempWrite>,
 }
 
 #[derive(Debug)]
@@ -135,6 +139,12 @@ struct FileSnapshot {
     path: PathBuf,
     len: u64,
     modified_ns: i128,
+}
+
+#[derive(Debug, Clone)]
+struct RecentTempWrite {
+    recorded_at: Instant,
+    watched_root: String,
 }
 
 impl Default for RawPathPrefixEntry {
@@ -196,6 +206,7 @@ impl SensorManager {
             lifecycle: ProcessLifecycleTracker::new(config),
             correlator: ProcessCorrelator::new(),
             scorer: CompositeBehaviorScorer::from_config(config),
+            recent_temp_writes: HashMap::new(),
         })
     }
 
@@ -221,6 +232,9 @@ impl SensorManager {
         let mut lifecycle = self.lifecycle.refresh().await?;
         let polled = self.backend.poll_batches(&self.protected_paths).await?;
         merge_lifecycle_events(&mut lifecycle.events, polled.lifecycle_events);
+        let now = Instant::now();
+        self.prune_recent_temp_writes(now);
+        self.record_temp_writes(&polled.batches, now);
 
         if !lifecycle.events.is_empty() {
             tracing::debug!(
@@ -231,7 +245,7 @@ impl SensorManager {
             );
         }
 
-        let mut events = Vec::new();
+        let mut events = self.build_temp_exec_events(&lifecycle);
         for batch in polled.batches {
             let correlation = self.correlator.correlate(&batch, &lifecycle);
             if correlation.process.is_none() && correlation.protected_hits > 0 {
@@ -245,6 +259,59 @@ impl SensorManager {
         }
 
         Ok(events)
+    }
+
+    fn prune_recent_temp_writes(&mut self, now: Instant) {
+        self.recent_temp_writes.retain(|_, entry| {
+            now.duration_since(entry.recorded_at)
+                <= Duration::from_secs(RECENT_TEMP_WRITE_WINDOW_SECS)
+        });
+    }
+
+    fn record_temp_writes(&mut self, batches: &[FileActivityBatch], now: Instant) {
+        for batch in batches {
+            if batch.file_ops.created == 0 && batch.file_ops.modified == 0 {
+                continue;
+            }
+
+            for path in batch.touched_paths.iter().filter(|path| is_temp_path(path)) {
+                self.recent_temp_writes.insert(
+                    path.clone(),
+                    RecentTempWrite {
+                        recorded_at: now,
+                        watched_root: batch.watched_root.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    fn build_temp_exec_events(
+        &self,
+        lifecycle: &crate::ebpf::lifecycle::LifecycleSnapshot,
+    ) -> Vec<BehaviorEvent> {
+        lifecycle
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                LifecycleEvent::Exec { pid, exe_path, .. } if is_temp_path(exe_path) => {
+                    let recent = self.recent_temp_writes.get(exe_path)?;
+                    let process = lifecycle
+                        .processes
+                        .iter()
+                        .find(|proc_info| proc_info.pid == *pid)
+                        .map(process_info_from_tracked);
+                    Some(self.scorer.score_temp_exec_trigger(
+                        Utc::now(),
+                        LIFECYCLE_EXEC_SENSOR_SOURCE,
+                        &recent.watched_root,
+                        exe_path,
+                        process.as_ref(),
+                    ))
+                }
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -632,6 +699,30 @@ fn build_activity_batch(
     })
 }
 
+fn process_info_from_tracked(
+    process: &crate::ebpf::lifecycle::TrackedProcess,
+) -> crate::ebpf::events::ProcessInfo {
+    crate::ebpf::events::ProcessInfo {
+        pid: process.pid,
+        process_name: process.process_name.clone(),
+        exe_path: process.exe_path.clone(),
+        command_line: process.command_line.clone(),
+        correlation_hits: 0,
+        parent_process_name: process.parent_process_name.clone(),
+        parent_command_line: process.parent_command_line.clone(),
+        container_runtime: process.container_runtime.clone(),
+        container_id: process.container_id.clone(),
+    }
+}
+
+fn is_temp_path(path: &str) -> bool {
+    let trimmed = path.trim();
+    trimmed == "/tmp"
+        || trimmed.starts_with("/tmp/")
+        || trimmed == "/var/tmp"
+        || trimmed.starts_with("/var/tmp/")
+}
+
 fn insert_touched_path(
     path: &Path,
     protected_paths: &[PathBuf],
@@ -747,6 +838,7 @@ mod tests {
     use crate::ebpf::events::{
         BehaviorLevel, RAW_BEHAVIOR_EVENT_KIND_FILE_ACTIVITY, RAW_BEHAVIOR_EVENT_KIND_PROCESS_EXEC,
     };
+    use crate::ebpf::lifecycle::{LifecycleSnapshot, TrackedProcess};
 
     #[tokio::test]
     async fn simulated_mass_rename_triggers_score_above_suspicious_threshold() {
@@ -850,5 +942,59 @@ mod tests {
             batch.protected_paths_touched,
             vec!["/srv/data.txt".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn recent_temp_write_followed_by_exec_emits_trigger_event() {
+        let root = std::env::temp_dir().join(format!("bannkenn-exec-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+
+        let config = ContainmentConfig {
+            enabled: true,
+            watch_paths: vec![root.display().to_string()],
+            ..ContainmentConfig::default()
+        };
+        let mut sensor = SensorManager::from_config(&config).expect("sensor should be enabled");
+        sensor.recent_temp_writes.insert(
+            "/tmp/payload".to_string(),
+            RecentTempWrite {
+                recorded_at: Instant::now(),
+                watched_root: "/tmp".to_string(),
+            },
+        );
+        let lifecycle = LifecycleSnapshot {
+            processes: vec![TrackedProcess {
+                pid: 77,
+                process_name: "cron".to_string(),
+                exe_path: "/tmp/payload".to_string(),
+                command_line: "/tmp/payload --run".to_string(),
+                parent_process_name: Some("systemd".to_string()),
+                parent_command_line: Some("systemd".to_string()),
+                container_runtime: None,
+                container_id: None,
+                open_paths: BTreeSet::new().into_iter().collect(),
+                protected: false,
+            }],
+            events: vec![LifecycleEvent::Exec {
+                pid: 77,
+                process_name: "cron".to_string(),
+                exe_path: "/tmp/payload".to_string(),
+            }],
+        };
+
+        let events = sensor.build_temp_exec_events(&lifecycle);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, BehaviorLevel::Suspicious);
+        assert!(events[0]
+            .reasons
+            .iter()
+            .any(|reason| reason == "temp write followed by execve"));
+        assert!(events[0]
+            .reasons
+            .iter()
+            .any(|reason| reason == "process name/executable mismatch"));
+
+        let _ = fs::remove_dir_all(root);
     }
 }
