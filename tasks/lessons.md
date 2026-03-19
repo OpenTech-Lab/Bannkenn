@@ -291,3 +291,12 @@
 ### Verifier-backed eBPF load failures need full error-chain logging
 - Wrapping Aya `ProgramError::LoadError` in `anyhow` context and then logging it with plain `{}` can hide the kernel verifier output, leaving only a useless top-level line like `failed to load bk_file_openat`.
 - For startup fallback paths, log the full chain with `{:#}` and enable verbose verifier logs in `EbpfLoader` so operators can diagnose rejected programs directly from `journalctl`.
+
+### Mutation response contracts must be explicit about empty bodies
+- If a dashboard helper treats a successful mutation as JSON, the server route must return JSON consistently or the client must explicitly handle `204 No Content`; do not leave that contract implicit.
+- For rename/edit flows where the UI immediately needs the refreshed display label, prefer returning the updated resource from the mutation route and keep a client-side empty-body fallback for older servers.
+- When a nickname augments a stable original agent name, use one shared formatter for tables, dialogs, links, and toast text so the `nickname(original-name)` presentation stays consistent.
+
+### Bot-config fixes should follow the tool's schema exactly
+- For `.coderabbit.yaml`, do not invent flat booleans like `reviews.enable_review`; use the documented nested key path such as `auto_review.enabled`.
+- When a review bot reports a schema error, fix the exact key structure first instead of assuming the value is the problem.
