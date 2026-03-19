@@ -24,6 +24,8 @@ pub fn sample_behavior_event(
         service_unit: Some("backup.service".to_string()),
         first_seen_at: Some("2026-03-14T08:30:00+00:00".to_string()),
         trust_class: Some("allowed_local_process".to_string()),
+        trust_policy_name: Some("backup-window".to_string()),
+        maintenance_activity: Some("trusted_maintenance".to_string()),
         process_name: Some("python3".to_string()),
         exe_path: Some("/usr/bin/python3".to_string()),
         command_line: Some("python3 encrypt.py".to_string()),

@@ -1,59 +1,18 @@
 use crate::config::ContainmentConfig;
 use crate::correlator::CorrelationResult;
 use crate::ebpf::events::{
-    BehaviorEvent, BehaviorLevel, FileActivityBatch, FileOperationCounts, ProcessInfo,
-    ProcessTrustClass,
+    BehaviorEvent, BehaviorLevel, FileActivityBatch, FileOperationCounts, MaintenanceActivity,
+    ProcessInfo,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use std::path::Path;
 
 const TEMP_ROOTS: &[&str] = &["/tmp", "/var/tmp"];
-const PACKAGE_HELPER_PATTERNS: &[&str] = &[
-    "apt",
-    "apt-get",
-    "aptitude",
-    "dpkg",
-    "dpkg-preconfigure",
-    "dpkg-deb",
-    "unattended-upgrade",
-    "depmod",
-    "cryptroot",
-    "update-initramfs",
-    "mkinitramfs",
-    "ldconfig",
-    "dracut",
-    "rpm",
-    "dnf",
-    "yum",
-    "apk",
-    "pacman",
-];
 const KNOWN_JAVA_RUNTIME_MARKERS: &[&str] =
     &["opensearch", "wazuh-indexer", "org.opensearch", "solr"];
 const SHELL_LIKE_PARENT_PATTERNS: &[&str] = &["sh", "bash", "dash", "zsh", "ash", "busybox"];
 const TRUSTED_EXEC_PREFIXES: &[&str] = &["/usr/", "/bin/", "/sbin/", "/lib/", "/nix/store/"];
-const TRUSTED_MAINTENANCE_PATTERNS: &[&str] = &[
-    "apt",
-    "apt-get",
-    "aptitude",
-    "dpkg",
-    "dpkg-preconfigure",
-    "dpkg-deb",
-    "unattended-upgrade",
-    "unattended-upgrade-shutdown",
-    "systemd",
-    "systemctl",
-    "systemd-tmpfiles",
-    "systemd-sysusers",
-    "systemd-sysctl",
-    "systemd-udevd",
-    "fwupd",
-    "fwupdmgr",
-    "snap",
-    "snapd",
-    "packagekitd",
-];
 const MAINTENANCE_PATH_PREFIXES: &[&str] = &[
     "/usr",
     "/etc",
@@ -296,6 +255,11 @@ impl CompositeBehaviorScorer {
             service_unit: process.and_then(|proc_info| proc_info.service_unit.clone()),
             first_seen_at: process.map(|proc_info| proc_info.first_seen_at),
             trust_class: process.map(|proc_info| proc_info.trust_class),
+            trust_policy_name: process.and_then(|proc_info| proc_info.trust_policy_name.clone()),
+            maintenance_activity: process.and_then(|proc_info| proc_info.maintenance_activity),
+            trust_policy_visibility: process
+                .map(|proc_info| proc_info.trust_policy_visibility)
+                .unwrap_or_default(),
             process_name: process.map(|proc_info| proc_info.process_name.clone()),
             exe_path: process.map(|proc_info| proc_info.exe_path.clone()),
             command_line: process.map(|proc_info| proc_info.command_line.clone()),
@@ -406,6 +370,11 @@ impl Scorer for CompositeBehaviorScorer {
             service_unit: process.and_then(|proc_info| proc_info.service_unit.clone()),
             first_seen_at: process.map(|proc_info| proc_info.first_seen_at),
             trust_class: process.map(|proc_info| proc_info.trust_class),
+            trust_policy_name: process.and_then(|proc_info| proc_info.trust_policy_name.clone()),
+            maintenance_activity: process.and_then(|proc_info| proc_info.maintenance_activity),
+            trust_policy_visibility: process
+                .map(|proc_info| proc_info.trust_policy_visibility)
+                .unwrap_or_default(),
             process_name: process.map(|proc_info| proc_info.process_name.clone()),
             exe_path: process.map(|proc_info| proc_info.exe_path.clone()),
             command_line: process.map(|proc_info| proc_info.command_line.clone()),
@@ -510,39 +479,18 @@ fn is_known_java_temp_extraction(process: &ProcessInfo, batch: &FileActivityBatc
 
 fn is_package_manager_helper_activity(process: &ProcessInfo, batch: &FileActivityBatch) -> bool {
     batch_touches_only_temp_paths(batch)
-        && process_matches_any_command_name(process, PACKAGE_HELPER_PATTERNS)
+        && matches!(
+            process.maintenance_activity,
+            Some(MaintenanceActivity::PackageManagerHelper)
+        )
 }
 
 fn is_trusted_maintenance_activity(process: &ProcessInfo, batch: &FileActivityBatch) -> bool {
-    let trusted_class = matches!(
-        process.trust_class,
-        ProcessTrustClass::TrustedSystem | ProcessTrustClass::TrustedPackageManaged
-    );
-
     batch_touches_only_paths(batch, MAINTENANCE_PATH_PREFIXES)
-        && trusted_class
-        && (process_matches_any_command_name(process, TRUSTED_MAINTENANCE_PATTERNS)
-            || service_unit_matches_any(
-                process.service_unit.as_deref(),
-                TRUSTED_MAINTENANCE_PATTERNS,
-            ))
-        && is_trusted_system_executable(&process.exe_path)
-        && !is_temp_path(&process.exe_path)
-        && !has_shell_like_parent(process)
-}
-
-fn service_unit_matches_any(service_unit: Option<&str>, patterns: &[&str]) -> bool {
-    let Some(service_unit) = service_unit else {
-        return false;
-    };
-
-    let normalized = normalize_command_name(service_unit.trim_end_matches(".service"));
-    !normalized.is_empty()
-        && patterns
-            .iter()
-            .map(|pattern| normalize_command_name(pattern))
-            .filter(|pattern| !pattern.is_empty())
-            .any(|pattern| pattern == normalized)
+        && matches!(
+            process.maintenance_activity,
+            Some(MaintenanceActivity::TrustedMaintenance)
+        )
 }
 
 fn is_agent_internal_activity(process: &ProcessInfo, batch: &FileActivityBatch) -> bool {

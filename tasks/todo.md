@@ -23,7 +23,9 @@
 - [x] Add service-unit, first-seen, and explicit trust-class metadata to process attribution and behavior events as the next step toward the identity profile.
 - [ ] Introduce a trust model with clear classes such as trusted system process, trusted package-managed process, allowed local process, unknown process, and suspicious process.
 - [ ] Add a policy-driven allowlist/baseline layer keyed by executable path, package name, service unit, container image, and maintenance window.
-- [ ] Identify package-manager and systemd-maintenance activity explicitly so protected-path changes can be downgraded when context is trustworthy.
+- [x] Add agent-config trust policy overrides keyed by executable path and service unit, with optional maintenance windows and event visibility for the matched policy.
+- [x] Add explicit maintenance attribution for package-manager helper and trusted system/package-managed work, then use that metadata in scoring and dashboard event details.
+- [x] Identify package-manager and systemd-maintenance activity explicitly so protected-path changes can be downgraded when context is trustworthy.
 
 ## Phase 3: Correlation And Scoring
 - [ ] Replace rule-only classification with weighted scoring across path sensitivity, trust level, burst size, write volume, extension anomaly, directory spread, parent reputation, recurrence, and container relevance.
@@ -44,6 +46,9 @@
 - [ ] Simulate ransomware-like rename/write workloads and compare alert quality against the current detector.
 - [ ] Document the default trust seeds, tuning knobs, and operator-facing severity semantics.
 
+## Additional Issues
+- [ ] Upgrade `sqlx-postgres` from `0.7.4` or otherwise resolve the current future-Rust incompatibility warning reported during `cargo test` and `cargo clippy`.
+
 ## Review
 - The design review points to false positives and CPU cost as the first issues to fix; stabilization and attribution should land before advanced ransomware heuristics.
 - The core architectural gap is weak process attribution, so scoring changes should depend on richer event context rather than threshold tuning alone.
@@ -63,3 +68,8 @@
 - 2026-03-19: Process identity attribution now carries `service_unit`, `first_seen_at`, and an explicit `trust_class` through lifecycle tracking, scoring, agent uploads, SQLite/Postgres storage, and the dashboard behavior-event view.
 - Regression coverage for this pass includes lifecycle service-unit/first-seen/trust-class tests, scorer coverage for trust-aware maintenance downgrades, clean `cargo clippy` on agent/server, and a dashboard production build without the prior workspace-root warning.
 - Remaining runtime validation: journald-first behavior on a live systemd host is still intentionally tracked in `Verification` because it requires host-level execution rather than another repo-only change.
+- 2026-03-19: Agent-config trust policy overrides now support executable-path and service-unit matching, optional maintenance windows, and `visible`/`hidden` event visibility. Matched policy names flow through agent uploads, SQLite/Postgres storage, and the dashboard behavior-event view.
+- 2026-03-19: Lifecycle attribution now emits explicit `maintenance_activity` metadata for package-manager helper work and trusted system/package-managed maintenance, and the scorer uses that metadata instead of re-deriving maintenance context from behavior-event heuristics.
+- Regression coverage for this pass includes trust-policy config round-trips, overnight maintenance-window matching, lifecycle trust-policy/maintenance classification tests, hidden-policy suppression tests, outbox/server/archive round-trips for the new behavior fields, and another dashboard production build.
+- Verification for this pass: `cargo test -p bannkenn-agent`, `cargo test -p bannkenn-server`, `cargo clippy -p bannkenn-agent -p bannkenn-server --tests -- -D warnings`, and `npm run build` in `dashboard/`.
+- The current verification loop still reports a non-blocking future incompatibility warning from `sqlx-postgres v0.7.4`; it is now tracked in `Additional Issues` because it needs a dependency-upgrade pass rather than another local feature change.

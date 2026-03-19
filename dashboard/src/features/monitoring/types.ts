@@ -33,6 +33,8 @@ export type BehaviorEvent = {
   service_unit?: string | null;
   first_seen_at?: string | null;
   trust_class?: string | null;
+  trust_policy_name?: string | null;
+  maintenance_activity?: string | null;
   process_name?: string | null;
   exe_path?: string | null;
   command_line?: string | null;

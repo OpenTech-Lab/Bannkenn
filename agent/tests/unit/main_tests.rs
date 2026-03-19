@@ -1,9 +1,10 @@
 use super::{
     apply_containment_setup, invalid_containment_paths, is_cloudflare_response,
     is_https_plain_http_mismatch_error, normalize_behavior_reason_category,
-    parse_containment_path_list, BehaviorEventDeduper, Cli, Commands, ContainmentConfig,
-    HttpProbeResult,
+    parse_containment_path_list, should_suppress_behavior_event, BehaviorEventDeduper, Cli,
+    Commands, ContainmentConfig, HttpProbeResult,
 };
+use crate::config::TrustPolicyVisibility;
 use crate::ebpf::events::{BehaviorEvent, BehaviorLevel, FileOperationCounts, ProcessTrustClass};
 use chrono::Utc;
 use clap::Parser;
@@ -105,6 +106,9 @@ fn behavior_event(score: u32, reasons: &[&str]) -> BehaviorEvent {
         service_unit: Some("backup.service".to_string()),
         first_seen_at: Some(Utc::now()),
         trust_class: Some(ProcessTrustClass::AllowedLocal),
+        trust_policy_name: None,
+        maintenance_activity: None,
+        trust_policy_visibility: Default::default(),
         process_name: Some("python3".to_string()),
         exe_path: Some("/usr/bin/python3".to_string()),
         command_line: Some("python3 encrypt.py".to_string()),
@@ -157,4 +161,15 @@ fn behavior_event_deduper_reopens_after_window_expires() {
     assert!(deduper.should_report(&event));
     thread::sleep(Duration::from_millis(10));
     assert!(deduper.should_report(&event));
+}
+
+#[test]
+fn hidden_trust_policy_suppresses_behavior_event_reporting() {
+    let mut event = behavior_event(61, &["rename burst x4"]);
+    event.trust_policy_name = Some("backup-window".to_string());
+    event.trust_policy_visibility = TrustPolicyVisibility::Hidden;
+    assert!(should_suppress_behavior_event(&event));
+
+    event.trust_policy_visibility = TrustPolicyVisibility::Visible;
+    assert!(!should_suppress_behavior_event(&event));
 }

@@ -1,14 +1,97 @@
 use crate::burst::BurstConfig;
 use crate::butterfly::ButterflyShieldConfig;
 use crate::campaign::CampaignConfig;
+use crate::ebpf::events::ProcessTrustClass;
 use crate::event_risk::EventRiskConfig;
 use crate::risk_level::RiskLevelConfig;
 use crate::shared_risk::SharedRiskSnapshot;
 use anyhow::{anyhow, Result};
+use chrono::{DateTime, Datelike, Local, NaiveTime, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustPolicyVisibility {
+    #[default]
+    Visible,
+    Hidden,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MaintenanceWindow {
+    #[serde(default)]
+    pub weekdays: Vec<String>,
+    pub start: String,
+    pub end: String,
+}
+
+impl MaintenanceWindow {
+    pub fn matches(&self, now: DateTime<Utc>) -> bool {
+        let local = now.with_timezone(&Local);
+        self.matches_weekday_and_time(local.weekday(), local.time())
+    }
+
+    fn matches_weekday_and_time(&self, weekday: Weekday, time: NaiveTime) -> bool {
+        let Some(start) = parse_maintenance_time(&self.start) else {
+            return false;
+        };
+        let Some(end) = parse_maintenance_time(&self.end) else {
+            return false;
+        };
+        let weekdays = self.parsed_weekdays();
+        let matches_day = |day| match &weekdays {
+            Some(days) => days.contains(&day),
+            None => true,
+        };
+
+        if start == end {
+            return matches_day(weekday);
+        }
+
+        if start < end {
+            matches_day(weekday) && time >= start && time < end
+        } else {
+            (matches_day(weekday) && time >= start)
+                || (matches_day(previous_weekday(weekday)) && time < end)
+        }
+    }
+
+    fn parsed_weekdays(&self) -> Option<Vec<Weekday>> {
+        let specified = self
+            .weekdays
+            .iter()
+            .map(|weekday| weekday.trim())
+            .filter(|weekday| !weekday.is_empty())
+            .collect::<Vec<_>>();
+        if specified.is_empty() {
+            None
+        } else {
+            Some(
+                specified
+                    .into_iter()
+                    .filter_map(parse_weekday)
+                    .collect::<Vec<_>>(),
+            )
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TrustPolicyRule {
+    pub name: String,
+    #[serde(default)]
+    pub exe_paths: Vec<String>,
+    #[serde(default)]
+    pub service_units: Vec<String>,
+    pub trust_class: ProcessTrustClass,
+    #[serde(default)]
+    pub visibility: TrustPolicyVisibility,
+    #[serde(default)]
+    pub maintenance_windows: Vec<MaintenanceWindow>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContainmentConfig {
@@ -40,6 +123,8 @@ pub struct ContainmentConfig {
     pub protected_paths: Vec<String>,
     #[serde(default = "default_protected_pid_allowlist")]
     pub protected_pid_allowlist: Vec<String>,
+    #[serde(default)]
+    pub trust_policies: Vec<TrustPolicyRule>,
     #[serde(default)]
     pub ebpf_object_path: Option<String>,
     #[serde(default = "default_ebpf_ringbuf_map")]
@@ -81,6 +166,7 @@ impl Default for ContainmentConfig {
             poll_interval_ms: default_poll_interval_ms(),
             protected_paths: Vec::new(),
             protected_pid_allowlist: default_protected_pid_allowlist(),
+            trust_policies: Vec::new(),
             ebpf_object_path: None,
             ebpf_ringbuf_map: default_ebpf_ringbuf_map(),
             suspicious_score: default_suspicious_score(),
@@ -240,6 +326,35 @@ fn default_protected_pid_allowlist() -> Vec<String> {
 
 fn default_ebpf_ringbuf_map() -> String {
     "BK_EVENTS".to_string()
+}
+
+fn parse_maintenance_time(value: &str) -> Option<NaiveTime> {
+    NaiveTime::parse_from_str(value.trim(), "%H:%M").ok()
+}
+
+fn parse_weekday(value: &str) -> Option<Weekday> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "mon" | "monday" => Some(Weekday::Mon),
+        "tue" | "tues" | "tuesday" => Some(Weekday::Tue),
+        "wed" | "wednesday" => Some(Weekday::Wed),
+        "thu" | "thur" | "thurs" | "thursday" => Some(Weekday::Thu),
+        "fri" | "friday" => Some(Weekday::Fri),
+        "sat" | "saturday" => Some(Weekday::Sat),
+        "sun" | "sunday" => Some(Weekday::Sun),
+        _ => None,
+    }
+}
+
+fn previous_weekday(weekday: Weekday) -> Weekday {
+    match weekday {
+        Weekday::Mon => Weekday::Sun,
+        Weekday::Tue => Weekday::Mon,
+        Weekday::Wed => Weekday::Tue,
+        Weekday::Thu => Weekday::Wed,
+        Weekday::Fri => Weekday::Thu,
+        Weekday::Sat => Weekday::Fri,
+        Weekday::Sun => Weekday::Sat,
+    }
 }
 
 impl Default for AgentConfig {

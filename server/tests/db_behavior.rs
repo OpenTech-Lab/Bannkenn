@@ -38,6 +38,11 @@ async fn behavior_events_round_trip_structured_payloads() {
         rows[0].trust_class.as_deref(),
         Some("allowed_local_process")
     );
+    assert_eq!(rows[0].trust_policy_name.as_deref(), Some("backup-window"));
+    assert_eq!(
+        rows[0].maintenance_activity.as_deref(),
+        Some("trusted_maintenance")
+    );
     assert_eq!(rows[0].parent_process_name.as_deref(), Some("systemd"));
     assert_eq!(rows[0].parent_command_line.as_deref(), Some("systemd"));
     assert_eq!(rows[0].container_runtime.as_deref(), Some("docker"));

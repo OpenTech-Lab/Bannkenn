@@ -44,6 +44,11 @@ fn archive_record_preserves_ingested_behavior_fields() {
         Some("2026-03-14T08:30:00+00:00")
     );
     assert_eq!(record.trust_class.as_deref(), Some("allowed_local_process"));
+    assert_eq!(record.trust_policy_name.as_deref(), Some("backup-window"));
+    assert_eq!(
+        record.maintenance_activity.as_deref(),
+        Some("trusted_maintenance")
+    );
     assert_eq!(record.parent_process_name.as_deref(), Some("systemd"));
     assert_eq!(record.parent_command_line.as_deref(), Some("systemd"));
     assert_eq!(record.container_runtime.as_deref(), Some("docker"));

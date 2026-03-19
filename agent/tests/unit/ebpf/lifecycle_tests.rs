@@ -1,5 +1,6 @@
 use super::*;
-use crate::ebpf::events::ProcessTrustClass;
+use crate::config::{MaintenanceWindow, TrustPolicyRule, TrustPolicyVisibility};
+use crate::ebpf::events::{MaintenanceActivity, ProcessTrustClass};
 
 fn tracked_process(pid: u32, process_name: &str, exe_path: &str) -> TrackedProcess {
     TrackedProcess {
@@ -10,6 +11,9 @@ fn tracked_process(pid: u32, process_name: &str, exe_path: &str) -> TrackedProce
         service_unit: None,
         first_seen_at: chrono::Utc::now(),
         trust_class: ProcessTrustClass::Unknown,
+        trust_policy_name: None,
+        maintenance_activity: None,
+        trust_policy_visibility: TrustPolicyVisibility::Visible,
         process_name: process_name.to_string(),
         exe_path: exe_path.to_string(),
         command_line: exe_path.to_string(),
@@ -140,6 +144,68 @@ fn process_profiles_keep_first_seen_across_refreshes() {
     assert_eq!(
         next.get(&11).expect("tracked process").first_seen_at,
         initial_seen_at
+    );
+}
+
+#[test]
+fn trust_policy_override_applies_matching_rule() {
+    let config = ContainmentConfig {
+        watch_paths: vec!["/srv/data".to_string()],
+        trust_policies: vec![TrustPolicyRule {
+            name: "backup-window".to_string(),
+            exe_paths: vec!["/usr/bin/python3".to_string()],
+            service_units: vec!["backup.service".to_string()],
+            trust_class: ProcessTrustClass::TrustedPackageManaged,
+            visibility: TrustPolicyVisibility::Hidden,
+            maintenance_windows: vec![MaintenanceWindow {
+                weekdays: Vec::new(),
+                start: "00:00".to_string(),
+                end: "00:00".to_string(),
+            }],
+        }],
+        ..ContainmentConfig::default()
+    };
+    let mut tracker = ProcessLifecycleTracker::new(&config);
+    let now = chrono::Utc::now();
+    let mut process = tracked_process(42, "python3", "/usr/bin/python3");
+    process.service_unit = Some("backup.service".to_string());
+
+    let mut processes = HashMap::from([(42, process)]);
+    tracker.apply_profile_metadata(&mut processes, now);
+
+    let process = processes.get(&42).expect("tracked process");
+    assert_eq!(
+        process.trust_class,
+        ProcessTrustClass::TrustedPackageManaged
+    );
+    assert_eq!(process.trust_policy_name.as_deref(), Some("backup-window"));
+    assert_eq!(
+        process.trust_policy_visibility,
+        TrustPolicyVisibility::Hidden
+    );
+}
+
+#[test]
+fn maintenance_activity_is_classified_for_trusted_service_work() {
+    let config = ContainmentConfig {
+        watch_paths: vec!["/srv/data".to_string()],
+        ..ContainmentConfig::default()
+    };
+    let mut tracker = ProcessLifecycleTracker::new(&config);
+    let now = chrono::Utc::now();
+    let mut process = tracked_process(55, "fwupd", "/usr/libexec/fwupd/fwupd");
+    process.parent_process_name = Some("systemd".to_string());
+    process.parent_command_line = Some("systemd".to_string());
+    process.service_unit = Some("fwupd.service".to_string());
+
+    let mut processes = HashMap::from([(55, process)]);
+    tracker.apply_profile_metadata(&mut processes, now);
+
+    assert_eq!(
+        processes
+            .get(&55)
+            .and_then(|process| process.maintenance_activity),
+        Some(MaintenanceActivity::TrustedMaintenance)
     );
 }
 

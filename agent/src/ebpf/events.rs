@@ -1,3 +1,4 @@
+use crate::config::TrustPolicyVisibility;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::mem::size_of;
@@ -61,6 +62,12 @@ pub struct ProcessInfo {
     pub first_seen_at: DateTime<Utc>,
     #[serde(default)]
     pub trust_class: ProcessTrustClass,
+    #[serde(default)]
+    pub trust_policy_name: Option<String>,
+    #[serde(default)]
+    pub maintenance_activity: Option<MaintenanceActivity>,
+    #[serde(skip, default)]
+    pub trust_policy_visibility: TrustPolicyVisibility,
     pub process_name: String,
     pub exe_path: String,
     pub command_line: String,
@@ -76,13 +83,17 @@ pub struct ProcessInfo {
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum ProcessTrustClass {
+    #[serde(rename = "trusted_system_process")]
     TrustedSystem,
+    #[serde(rename = "trusted_package_managed_process")]
     TrustedPackageManaged,
+    #[serde(rename = "allowed_local_process")]
     AllowedLocal,
+    #[serde(rename = "unknown_process")]
     #[default]
     Unknown,
+    #[serde(rename = "suspicious_process")]
     Suspicious,
 }
 
@@ -94,6 +105,23 @@ impl ProcessTrustClass {
             Self::AllowedLocal => "allowed_local_process",
             Self::Unknown => "unknown_process",
             Self::Suspicious => "suspicious_process",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MaintenanceActivity {
+    #[serde(rename = "package_manager_helper")]
+    PackageManagerHelper,
+    #[serde(rename = "trusted_maintenance")]
+    TrustedMaintenance,
+}
+
+impl MaintenanceActivity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PackageManagerHelper => "package_manager_helper",
+            Self::TrustedMaintenance => "trusted_maintenance",
         }
     }
 }
@@ -130,6 +158,10 @@ pub struct BehaviorEvent {
     pub service_unit: Option<String>,
     pub first_seen_at: Option<DateTime<Utc>>,
     pub trust_class: Option<ProcessTrustClass>,
+    pub trust_policy_name: Option<String>,
+    pub maintenance_activity: Option<MaintenanceActivity>,
+    #[serde(skip, default)]
+    pub trust_policy_visibility: TrustPolicyVisibility,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,

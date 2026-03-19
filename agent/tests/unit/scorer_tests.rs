@@ -1,6 +1,8 @@
 use super::*;
 use crate::config::ContainmentConfig;
-use crate::ebpf::events::{FileActivityBatch, FileOperationCounts, ProcessInfo, ProcessTrustClass};
+use crate::ebpf::events::{
+    FileActivityBatch, FileOperationCounts, MaintenanceActivity, ProcessInfo, ProcessTrustClass,
+};
 use chrono::Utc;
 
 fn batch_with_ops(
@@ -30,6 +32,9 @@ fn process(pid: u32, process_name: &str, exe_path: &str, command_line: &str) -> 
         service_unit: None,
         first_seen_at: Utc::now(),
         trust_class: ProcessTrustClass::Unknown,
+        trust_policy_name: None,
+        maintenance_activity: None,
+        trust_policy_visibility: Default::default(),
         process_name: process_name.to_string(),
         exe_path: exe_path.to_string(),
         command_line: command_line.to_string(),
@@ -67,6 +72,9 @@ fn mass_rename_scores_as_suspicious() {
             service_unit: Some("backup.service".to_string()),
             first_seen_at: Utc::now(),
             trust_class: ProcessTrustClass::AllowedLocal,
+            trust_policy_name: None,
+            maintenance_activity: None,
+            trust_policy_visibility: Default::default(),
             process_name: "python3".to_string(),
             exe_path: "/usr/bin/python3".to_string(),
             command_line: "python3 encrypt.py".to_string(),
@@ -186,12 +194,11 @@ fn package_manager_helper_temp_activity_is_downgraded() {
         3 * 1_048_576,
     );
     let correlation = CorrelationResult {
-        process: Some(process(
-            84,
-            "depmod",
-            "/usr/sbin/depmod",
-            "/usr/sbin/depmod -a",
-        )),
+        process: Some({
+            let mut proc = process(84, "depmod", "/usr/sbin/depmod", "/usr/sbin/depmod -a");
+            proc.maintenance_activity = Some(MaintenanceActivity::PackageManagerHelper);
+            proc
+        }),
         protected_hits: 0,
     };
 
@@ -260,6 +267,7 @@ fn trusted_maintenance_activity_is_downgraded() {
     proc.parent_command_line = Some("systemd".to_string());
     proc.service_unit = Some("fwupd.service".to_string());
     proc.trust_class = ProcessTrustClass::TrustedPackageManaged;
+    proc.maintenance_activity = Some(MaintenanceActivity::TrustedMaintenance);
     let correlation = CorrelationResult {
         process: Some(proc),
         protected_hits: 1,
@@ -436,6 +444,7 @@ fn overlapping_benign_contexts_do_not_double_subtract_the_same_components() {
     proc.parent_command_line = Some("systemd".to_string());
     proc.container_runtime = Some("docker".to_string());
     proc.container_id = Some("0123456789abcdef0123456789abcdef".to_string());
+    proc.maintenance_activity = Some(MaintenanceActivity::PackageManagerHelper);
 
     let adjustment = scorer.context_adjustment(
         &batch,

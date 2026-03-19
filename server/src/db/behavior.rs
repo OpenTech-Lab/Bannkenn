@@ -55,6 +55,8 @@ impl Db {
             "service_unit": &event.service_unit,
             "first_seen_at": &event.first_seen_at,
             "trust_class": &event.trust_class,
+            "trust_policy_name": &event.trust_policy_name,
+            "maintenance_activity": &event.maintenance_activity,
             "process_name": &event.process_name,
             "exe_path": &event.exe_path,
             "command_line": &event.command_line,
@@ -169,6 +171,8 @@ impl Db {
                 service_unit,
                 first_seen_at,
                 trust_class,
+                trust_policy_name,
+                maintenance_activity,
                 process_name,
                 exe_path,
                 command_line,
@@ -190,7 +194,7 @@ impl Db {
                 level,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(incident_id)
@@ -204,6 +208,8 @@ impl Db {
         .bind(&event.service_unit)
         .bind(&event.first_seen_at)
         .bind(&event.trust_class)
+        .bind(&event.trust_policy_name)
+        .bind(&event.maintenance_activity)
         .bind(&event.process_name)
         .bind(&event.exe_path)
         .bind(&event.command_line)
@@ -248,6 +254,8 @@ impl Db {
                 service_unit,
                 first_seen_at,
                 trust_class,
+                trust_policy_name,
+                maintenance_activity,
                 process_name,
                 exe_path,
                 command_line,
@@ -309,6 +317,8 @@ impl Db {
                 service_unit,
                 first_seen_at,
                 trust_class,
+                trust_policy_name,
+                maintenance_activity,
                 process_name,
                 exe_path,
                 command_line,
@@ -363,6 +373,8 @@ fn map_behavior_event_row(row: sqlx::sqlite::SqliteRow) -> anyhow::Result<Behavi
         service_unit: row.try_get("service_unit")?,
         first_seen_at: row.try_get("first_seen_at")?,
         trust_class: row.try_get("trust_class")?,
+        trust_policy_name: row.try_get("trust_policy_name")?,
+        maintenance_activity: row.try_get("maintenance_activity")?,
         process_name: row.try_get("process_name")?,
         exe_path: row.try_get("exe_path")?,
         command_line: row.try_get("command_line")?,

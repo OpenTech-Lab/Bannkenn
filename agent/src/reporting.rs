@@ -14,6 +14,8 @@ pub struct BehaviorEventUpload {
     pub service_unit: Option<String>,
     pub first_seen_at: Option<String>,
     pub trust_class: Option<String>,
+    pub trust_policy_name: Option<String>,
+    pub maintenance_activity: Option<String>,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
@@ -66,6 +68,10 @@ impl From<&BehaviorEvent> for BehaviorEventUpload {
             service_unit: event.service_unit.clone(),
             first_seen_at: event.first_seen_at.map(|timestamp| timestamp.to_rfc3339()),
             trust_class: event.trust_class.map(|class| class.as_str().to_string()),
+            trust_policy_name: event.trust_policy_name.clone(),
+            maintenance_activity: event
+                .maintenance_activity
+                .map(|activity| activity.as_str().to_string()),
             process_name: event.process_name.clone(),
             exe_path: event.exe_path.clone(),
             command_line: event.command_line.clone(),

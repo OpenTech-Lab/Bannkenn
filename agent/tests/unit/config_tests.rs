@@ -66,6 +66,83 @@ fn runtime_defaults_populate_containment_config_without_enabling_it() {
     assert!(containment
         .protected_pid_allowlist
         .contains(&"bannkenn-agent".to_string()));
+    assert!(containment.trust_policies.is_empty());
+}
+
+#[test]
+fn containment_trust_policy_round_trips() {
+    let config = AgentConfig {
+        server_url: "http://localhost:8080".to_string(),
+        jwt_token: "token123".to_string(),
+        ca_cert_path: None,
+        agent_name: "test-agent".to_string(),
+        uuid: "test-uuid".to_string(),
+        log_path: "/var/log/auth.log".to_string(),
+        log_paths: vec!["/var/log/auth.log".to_string()],
+        threshold: 3,
+        window_secs: 120,
+        butterfly_shield: None,
+        burst: None,
+        risk_level: None,
+        event_risk: None,
+        campaign: None,
+        mmdb_dir: None,
+        containment: Some(ContainmentConfig {
+            trust_policies: vec![TrustPolicyRule {
+                name: "backup-window".to_string(),
+                exe_paths: vec!["/usr/bin/rsync".to_string()],
+                service_units: vec!["backup.service".to_string()],
+                trust_class: crate::ebpf::events::ProcessTrustClass::TrustedPackageManaged,
+                visibility: TrustPolicyVisibility::Hidden,
+                maintenance_windows: vec![MaintenanceWindow {
+                    weekdays: vec!["sat".to_string(), "sun".to_string()],
+                    start: "01:00".to_string(),
+                    end: "05:00".to_string(),
+                }],
+            }],
+            ..ContainmentConfig::default()
+        }),
+    };
+
+    let toml_str = toml::to_string(&config).unwrap();
+    let deserialized: AgentConfig = toml::from_str(&toml_str).unwrap();
+    let containment = deserialized.containment.expect("containment config");
+    let policy = containment
+        .trust_policies
+        .first()
+        .expect("trust policy should round-trip");
+
+    assert_eq!(policy.name, "backup-window");
+    assert_eq!(policy.exe_paths, vec!["/usr/bin/rsync"]);
+    assert_eq!(policy.service_units, vec!["backup.service"]);
+    assert_eq!(
+        policy.trust_class,
+        crate::ebpf::events::ProcessTrustClass::TrustedPackageManaged
+    );
+    assert_eq!(policy.visibility, TrustPolicyVisibility::Hidden);
+    assert_eq!(policy.maintenance_windows.len(), 1);
+}
+
+#[test]
+fn maintenance_window_matches_overnight_ranges() {
+    let window = MaintenanceWindow {
+        weekdays: vec!["sat".to_string()],
+        start: "23:00".to_string(),
+        end: "02:00".to_string(),
+    };
+
+    assert!(window.matches_weekday_and_time(
+        chrono::Weekday::Sat,
+        chrono::NaiveTime::from_hms_opt(23, 30, 0).unwrap(),
+    ));
+    assert!(window.matches_weekday_and_time(
+        chrono::Weekday::Sun,
+        chrono::NaiveTime::from_hms_opt(1, 30, 0).unwrap(),
+    ));
+    assert!(!window.matches_weekday_and_time(
+        chrono::Weekday::Sun,
+        chrono::NaiveTime::from_hms_opt(3, 0, 0).unwrap(),
+    ));
 }
 
 #[test]

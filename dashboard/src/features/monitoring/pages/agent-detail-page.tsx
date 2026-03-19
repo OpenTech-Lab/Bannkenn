@@ -485,6 +485,12 @@ export function AgentDetailPage() {
                                 <p className="truncate text-xs text-muted-foreground">
                                   trust: {event.trust_class ?? 'unknown'}
                                   {event.service_unit ? ` / unit: ${event.service_unit}` : ''}
+                                  {event.trust_policy_name
+                                    ? ` / policy: ${event.trust_policy_name}`
+                                    : ''}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  maintenance: {event.maintenance_activity ?? 'none'}
                                 </p>
                                 <p className="truncate text-xs text-muted-foreground">
                                   ids: pid {event.pid ?? '—'} / ppid {event.parent_pid ?? '—'} / uid

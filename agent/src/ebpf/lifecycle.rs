@@ -1,5 +1,5 @@
-use crate::config::ContainmentConfig;
-use crate::ebpf::events::ProcessTrustClass;
+use crate::config::{ContainmentConfig, TrustPolicyRule, TrustPolicyVisibility};
+use crate::ebpf::events::{MaintenanceActivity, ProcessTrustClass};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
@@ -33,6 +33,27 @@ const TRUSTED_PACKAGE_MANAGED_PATTERNS: &[&str] = &[
     "unattended-upgrade",
     "unattended-upgrade-shutdown",
 ];
+const PACKAGE_MANAGER_HELPER_PATTERNS: &[&str] = &[
+    "apt",
+    "apt-get",
+    "aptitude",
+    "dpkg",
+    "dpkg-preconfigure",
+    "dpkg-deb",
+    "unattended-upgrade",
+    "depmod",
+    "cryptroot",
+    "update-initramfs",
+    "mkinitramfs",
+    "ldconfig",
+    "dracut",
+    "rpm",
+    "dnf",
+    "yum",
+    "apk",
+    "pacman",
+];
+const SHELL_LIKE_PARENT_PATTERNS: &[&str] = &["sh", "bash", "dash", "zsh", "ash", "busybox"];
 const LOCAL_EXEC_PREFIXES: &[&str] = &["/usr/local/", "/opt/", "/srv/", "/home/", "/root/"];
 const TEMP_EXEC_PREFIXES: &[&str] = &["/tmp/", "/var/tmp/"];
 
@@ -45,6 +66,9 @@ pub struct TrackedProcess {
     pub service_unit: Option<String>,
     pub first_seen_at: DateTime<Utc>,
     pub trust_class: ProcessTrustClass,
+    pub trust_policy_name: Option<String>,
+    pub maintenance_activity: Option<MaintenanceActivity>,
+    pub trust_policy_visibility: TrustPolicyVisibility,
     pub process_name: String,
     pub exe_path: String,
     pub command_line: String,
@@ -79,6 +103,7 @@ pub struct LifecycleSnapshot {
 pub struct ProcessLifecycleTracker {
     watch_roots: Vec<PathBuf>,
     protected_pid_allowlist: Vec<String>,
+    trust_policies: Vec<TrustPolicyRule>,
     previous: HashMap<u32, ProcessIdentity>,
     profiles: HashMap<String, ProcessProfileState>,
 }
@@ -123,6 +148,7 @@ impl ProcessLifecycleTracker {
                 .iter()
                 .map(|entry| entry.to_ascii_lowercase())
                 .collect(),
+            trust_policies: config.trust_policies.clone(),
             previous: HashMap::new(),
             profiles: HashMap::new(),
         }
@@ -172,6 +198,14 @@ impl ProcessLifecycleTracker {
                 .first_seen_at;
             process.first_seen_at = first_seen_at;
             process.trust_class = classify_process_trust(process);
+            process.trust_policy_name = None;
+            process.trust_policy_visibility = TrustPolicyVisibility::Visible;
+            if let Some(policy) = match_trust_policy(&self.trust_policies, process, now) {
+                process.trust_class = policy.trust_class;
+                process.trust_policy_name = Some(policy.name.clone());
+                process.trust_policy_visibility = policy.visibility;
+            }
+            process.maintenance_activity = classify_maintenance_activity(process);
         }
     }
 }
@@ -238,6 +272,9 @@ fn inspect_process(
         service_unit: cgroup.service_unit,
         first_seen_at: Utc::now(),
         trust_class: ProcessTrustClass::Unknown,
+        trust_policy_name: None,
+        maintenance_activity: None,
+        trust_policy_visibility: TrustPolicyVisibility::Visible,
         process_name,
         exe_path,
         command_line,
@@ -442,6 +479,68 @@ fn classify_process_trust(process: &TrackedProcess) -> ProcessTrustClass {
     ProcessTrustClass::Unknown
 }
 
+fn classify_maintenance_activity(process: &TrackedProcess) -> Option<MaintenanceActivity> {
+    if process_matches_any_command_name(process, PACKAGE_MANAGER_HELPER_PATTERNS) {
+        return Some(MaintenanceActivity::PackageManagerHelper);
+    }
+
+    let trusted_class = matches!(
+        process.trust_class,
+        ProcessTrustClass::TrustedSystem | ProcessTrustClass::TrustedPackageManaged
+    );
+
+    if trusted_class
+        && (process_matches_any_command_name(process, TRUSTED_PACKAGE_MANAGED_PATTERNS)
+            || service_unit_matches_any(
+                process.service_unit.as_deref(),
+                TRUSTED_PACKAGE_MANAGED_PATTERNS,
+            ))
+        && is_trusted_system_executable(&process.exe_path)
+        && !is_temp_executable(&process.exe_path)
+        && !has_shell_like_parent(process)
+    {
+        return Some(MaintenanceActivity::TrustedMaintenance);
+    }
+
+    None
+}
+
+fn match_trust_policy<'a>(
+    policies: &'a [TrustPolicyRule],
+    process: &TrackedProcess,
+    now: DateTime<Utc>,
+) -> Option<&'a TrustPolicyRule> {
+    policies
+        .iter()
+        .find(|policy| trust_policy_matches(policy, process, now))
+}
+
+fn trust_policy_matches(
+    policy: &TrustPolicyRule,
+    process: &TrackedProcess,
+    now: DateTime<Utc>,
+) -> bool {
+    let exe_match = !policy.exe_paths.is_empty()
+        && policy
+            .exe_paths
+            .iter()
+            .any(|exe_path| exe_path_matches_policy(&process.exe_path, exe_path));
+    let service_unit_match = !policy.service_units.is_empty()
+        && policy.service_units.iter().any(|service_unit| {
+            service_unit_matches_policy(process.service_unit.as_deref(), service_unit)
+        });
+
+    if !exe_match && !service_unit_match {
+        return false;
+    }
+
+    policy.maintenance_windows.is_empty()
+        || policy
+            .maintenance_windows
+            .iter()
+            .any(|window| window.matches(now))
+}
+
 fn is_trusted_system_process(process: &TrackedProcess) -> bool {
     is_trusted_system_executable(&process.exe_path)
         && (process.pid == 1
@@ -492,18 +591,43 @@ fn process_matches_any_command_name(process: &TrackedProcess, patterns: &[&str])
     )
 }
 
+fn has_shell_like_parent(process: &TrackedProcess) -> bool {
+    matches_any_command_name(
+        [
+            process.parent_process_name.as_deref(),
+            process
+                .parent_command_line
+                .as_deref()
+                .and_then(argv0_basename),
+        ]
+        .into_iter()
+        .flatten(),
+        SHELL_LIKE_PARENT_PATTERNS,
+    )
+}
+
 fn service_unit_matches_any(service_unit: Option<&str>, patterns: &[&str]) -> bool {
     let Some(service_unit) = service_unit else {
         return false;
     };
 
-    let normalized = normalize_command_name(service_unit.trim_end_matches(".service"));
+    let normalized = normalize_service_unit_name(service_unit);
     !normalized.is_empty()
         && patterns
             .iter()
-            .map(|pattern| normalize_command_name(pattern))
+            .map(|pattern| normalize_service_unit_name(pattern))
             .filter(|pattern| !pattern.is_empty())
             .any(|pattern| pattern == normalized)
+}
+
+fn service_unit_matches_policy(service_unit: Option<&str>, configured_value: &str) -> bool {
+    let Some(service_unit) = service_unit else {
+        return false;
+    };
+
+    let normalized = normalize_service_unit_name(service_unit);
+    let configured = normalize_service_unit_name(configured_value);
+    !normalized.is_empty() && normalized == configured
 }
 
 fn matches_any_command_name<'a>(
@@ -534,8 +658,29 @@ fn argv0_basename(command_line: &str) -> Option<&str> {
     path_basename(argv0).or_else(|| (!argv0.is_empty()).then_some(argv0))
 }
 
+fn exe_path_matches_policy(exe_path: &str, configured_value: &str) -> bool {
+    let normalized = normalize_policy_path(exe_path);
+    let configured = normalize_policy_path(configured_value);
+    !normalized.is_empty() && normalized == configured
+}
+
 fn normalize_command_name(value: &str) -> String {
     value.trim().to_ascii_lowercase()
+}
+
+fn normalize_service_unit_name(value: &str) -> String {
+    normalize_command_name(value.trim_end_matches(".service"))
+}
+
+fn normalize_policy_path(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else if trimmed.len() == 1 {
+        trimmed.to_string()
+    } else {
+        trimmed.trim_end_matches('/').to_string()
+    }
 }
 
 fn read_cgroup_metadata(path: PathBuf) -> CgroupMetadata {

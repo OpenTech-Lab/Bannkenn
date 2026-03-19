@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS behavior_events_archive (
     service_unit TEXT,
     first_seen_at TIMESTAMPTZ,
     trust_class TEXT,
+    trust_policy_name TEXT,
+    maintenance_activity TEXT,
     process_name TEXT,
     exe_path TEXT,
     command_line TEXT,
@@ -78,6 +80,8 @@ pub struct BehaviorArchiveRecord {
     pub service_unit: Option<String>,
     pub first_seen_at: Option<String>,
     pub trust_class: Option<String>,
+    pub trust_policy_name: Option<String>,
+    pub maintenance_activity: Option<String>,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
@@ -120,6 +124,8 @@ impl BehaviorArchiveRecord {
             service_unit: event.service_unit.clone(),
             first_seen_at: event.first_seen_at.clone(),
             trust_class: event.trust_class.clone(),
+            trust_policy_name: event.trust_policy_name.clone(),
+            maintenance_activity: event.maintenance_activity.clone(),
             process_name: event.process_name.clone(),
             exe_path: event.exe_path.clone(),
             command_line: event.command_line.clone(),
@@ -199,6 +205,16 @@ impl BehaviorPgArchive {
         .execute(&self.pool)
         .await?;
         sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS trust_policy_name TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS maintenance_activity TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
             "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS container_runtime TEXT",
         )
         .execute(&self.pool)
@@ -230,6 +246,8 @@ impl BehaviorPgArchive {
                 service_unit,
                 first_seen_at,
                 trust_class,
+                trust_policy_name,
+                maintenance_activity,
                 process_name,
                 exe_path,
                 command_line,
@@ -254,7 +272,7 @@ impl BehaviorPgArchive {
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
                 $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-                $27, $28, $29, $30, $31, $32
+                $27, $28, $29, $30, $31, $32, $33, $34
             )
             ON CONFLICT (sqlite_event_id) DO NOTHING
             "#,
@@ -271,6 +289,8 @@ impl BehaviorPgArchive {
         .bind(&record.service_unit)
         .bind(&record.first_seen_at)
         .bind(&record.trust_class)
+        .bind(&record.trust_policy_name)
+        .bind(&record.maintenance_activity)
         .bind(&record.process_name)
         .bind(&record.exe_path)
         .bind(&record.command_line)
