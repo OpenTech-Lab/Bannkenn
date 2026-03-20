@@ -94,44 +94,22 @@ pub async fn create(
         parent_pid: payload.parent_pid,
         uid: payload.uid,
         gid: payload.gid,
-        service_unit: payload
-            .service_unit
-            .map(|s| cap_string(s, MAX_STRING_BYTES)),
+        service_unit: cap_optional_string(payload.service_unit),
         first_seen_at: payload.first_seen_at,
-        trust_class: payload.trust_class.map(|s| cap_string(s, MAX_STRING_BYTES)),
-        trust_policy_name: payload
-            .trust_policy_name
-            .map(|s| cap_string(s, MAX_STRING_BYTES)),
-        maintenance_activity: payload
-            .maintenance_activity
-            .map(|s| cap_string(s, MAX_STRING_BYTES)),
-        package_name: payload
-            .package_name
-            .map(|s| cap_string(s, MAX_STRING_BYTES)),
-        package_manager: payload
-            .package_manager
-            .map(|s| cap_string(s, MAX_STRING_BYTES)),
-        parent_chain: cap_vec(payload.parent_chain, MAX_VEC_ITEMS),
-        process_name: payload.process_name,
-        exe_path: payload.exe_path,
-        command_line: payload
-            .command_line
-            .map(|s| cap_string(s, MAX_STRING_BYTES)),
-        parent_process_name: payload
-            .parent_process_name
-            .map(|s| cap_string(s, MAX_STRING_BYTES)),
-        parent_command_line: payload
-            .parent_command_line
-            .map(|s| cap_string(s, MAX_STRING_BYTES)),
-        container_runtime: payload
-            .container_runtime
-            .map(|s| cap_string(s, MAX_STRING_BYTES)),
-        container_id: payload
-            .container_id
-            .map(|s| cap_string(s, MAX_STRING_BYTES)),
-        container_image: payload
-            .container_image
-            .map(|s| cap_string(s, MAX_STRING_BYTES)),
+        trust_class: cap_optional_string(payload.trust_class),
+        trust_policy_name: cap_optional_string(payload.trust_policy_name),
+        maintenance_activity: cap_optional_string(payload.maintenance_activity),
+        package_name: cap_optional_string(payload.package_name),
+        package_manager: cap_optional_string(payload.package_manager),
+        parent_chain: cap_parent_chain(payload.parent_chain),
+        process_name: cap_optional_string(payload.process_name),
+        exe_path: cap_optional_string(payload.exe_path),
+        command_line: cap_optional_string(payload.command_line),
+        parent_process_name: cap_optional_string(payload.parent_process_name),
+        parent_command_line: cap_optional_string(payload.parent_command_line),
+        container_runtime: cap_optional_string(payload.container_runtime),
+        container_id: cap_optional_string(payload.container_id),
+        container_image: cap_optional_string(payload.container_image),
         orchestrator: cap_orchestrator(payload.orchestrator),
         container_mounts: cap_container_mounts(payload.container_mounts),
         correlation_hits: payload.correlation_hits,
@@ -175,17 +153,27 @@ pub async fn create(
     ))
 }
 
+fn cap_optional_string(value: Option<String>) -> Option<String> {
+    value.map(|value| cap_string(value, MAX_STRING_BYTES))
+}
+
+fn cap_parent_chain(parent_chain: Vec<BehaviorParentChainEntry>) -> Vec<BehaviorParentChainEntry> {
+    cap_vec(parent_chain, MAX_VEC_ITEMS)
+        .into_iter()
+        .map(|entry| BehaviorParentChainEntry {
+            pid: entry.pid,
+            process_name: cap_optional_string(entry.process_name),
+            exe_path: cap_optional_string(entry.exe_path),
+            command_line: cap_optional_string(entry.command_line),
+        })
+        .collect()
+}
+
 fn cap_orchestrator(orchestrator: BehaviorOrchestratorRow) -> BehaviorOrchestratorRow {
     BehaviorOrchestratorRow {
-        platform: orchestrator
-            .platform
-            .map(|value| cap_string(value, MAX_STRING_BYTES)),
-        namespace: orchestrator
-            .namespace
-            .map(|value| cap_string(value, MAX_STRING_BYTES)),
-        workload: orchestrator
-            .workload
-            .map(|value| cap_string(value, MAX_STRING_BYTES)),
+        platform: cap_optional_string(orchestrator.platform),
+        namespace: cap_optional_string(orchestrator.namespace),
+        workload: cap_optional_string(orchestrator.workload),
     }
 }
 
@@ -194,11 +182,9 @@ fn cap_container_mounts(mounts: Vec<BehaviorContainerMountRow>) -> Vec<BehaviorC
         .into_iter()
         .map(|mount| BehaviorContainerMountRow {
             mount_type: cap_string(mount.mount_type, MAX_STRING_BYTES),
-            source: mount
-                .source
-                .map(|value| cap_string(value, MAX_STRING_BYTES)),
+            source: cap_optional_string(mount.source),
             destination: cap_string(mount.destination, MAX_STRING_BYTES),
-            name: mount.name.map(|value| cap_string(value, MAX_STRING_BYTES)),
+            name: cap_optional_string(mount.name),
         })
         .collect()
 }
@@ -214,4 +200,53 @@ pub async fn list(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(rows))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cap_parent_chain_caps_nested_fields() {
+        let oversized = "x".repeat(MAX_STRING_BYTES + 32);
+        let capped = cap_parent_chain(vec![BehaviorParentChainEntry {
+            pid: 42,
+            process_name: Some(oversized.clone()),
+            exe_path: Some(oversized.clone()),
+            command_line: Some(oversized),
+        }]);
+
+        assert_eq!(capped.len(), 1);
+        assert_eq!(capped[0].pid, 42);
+        assert_eq!(
+            capped[0].process_name.as_ref().map(String::len),
+            Some(MAX_STRING_BYTES)
+        );
+        assert_eq!(
+            capped[0].exe_path.as_ref().map(String::len),
+            Some(MAX_STRING_BYTES)
+        );
+        assert_eq!(
+            capped[0].command_line.as_ref().map(String::len),
+            Some(MAX_STRING_BYTES)
+        );
+    }
+
+    #[test]
+    fn cap_parent_chain_keeps_vector_limit() {
+        let capped = cap_parent_chain(
+            (0..(MAX_VEC_ITEMS + 5))
+                .map(|pid| BehaviorParentChainEntry {
+                    pid: pid as u32,
+                    process_name: Some(format!("proc-{pid}")),
+                    exe_path: None,
+                    command_line: None,
+                })
+                .collect(),
+        );
+
+        assert_eq!(capped.len(), MAX_VEC_ITEMS);
+        assert_eq!(capped[0].pid, 0);
+        assert_eq!(capped[MAX_VEC_ITEMS - 1].pid, (MAX_VEC_ITEMS - 1) as u32);
+    }
 }

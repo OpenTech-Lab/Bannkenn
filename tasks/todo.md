@@ -3,6 +3,17 @@
 ## Source
 - Based on `docs/06_BannKenn v2 Detection Design Review.md`
 
+## Current Task: 2026-03-20 CodeRabbit Follow-Ups
+- [x] Keep the active fuse PID/root stable when a fused coordinator only refreshes its release timer.
+- [x] Cap nested `parent_chain` string fields before behavior events are persisted or archived.
+- [x] Add regression tests for fuse-target stability and nested parent-chain caps.
+- [x] Run focused verification for the touched agent and server paths.
+- Review:
+  - Split fuse timer extension from fuse-target assignment so already-fused refreshes do not overwrite the suspended PID/root.
+  - Added a containment regression proving a second containment-candidate on a different PID/root still resumes and throttles the original suspended process when fuse decays.
+  - Added `cap_parent_chain(...)` plus shared optional-string capping in the behavior-event route so nested ancestry fields are truncated before persistence.
+  - Verification: `cargo fmt --all`, `cargo test -p bannkenn-agent --test containment`, `cargo test -p bannkenn-server cap_parent_chain`.
+
 ## Immediate Fixes
 - [x] Stop repeated polling of `/var/log/auth.log` on hosts that use journald; prefer journal subscriptions and suppress missing-file warning spam.
 - [x] Lower the default sensitivity for rename burst and delete burst scoring, then back the new thresholds with regression coverage.

@@ -189,7 +189,7 @@ impl ContainmentCoordinator {
         if self.state == ContainmentState::Fuse
             && matches!(event.level, BehaviorLevel::ContainmentCandidate)
         {
-            self.refresh_fuse_timer(event, now);
+            self.extend_fuse_timer(now);
         }
 
         if target.rank() <= self.state.rank() {
@@ -337,7 +337,8 @@ impl ContainmentCoordinator {
                 actions
             }
             ContainmentState::Fuse => {
-                self.refresh_fuse_timer(event, now);
+                self.set_active_fuse_target(event);
+                self.extend_fuse_timer(now);
                 let mut actions = Vec::new();
                 if let Some(pid) = event.pid {
                     actions.push(EnforcementAction::SuspendProcess {
@@ -350,9 +351,12 @@ impl ContainmentCoordinator {
         }
     }
 
-    fn refresh_fuse_timer(&mut self, event: &BehaviorEvent, now: DateTime<Utc>) {
+    fn extend_fuse_timer(&mut self, now: DateTime<Utc>) {
         self.fuse_release_at =
             Some(now + Duration::minutes(self.config.auto_fuse_release_min as i64));
+    }
+
+    fn set_active_fuse_target(&mut self, event: &BehaviorEvent) {
         self.active_fuse_pid = event.pid;
         self.active_fuse_root = Some(event.watched_root.clone());
     }
@@ -386,13 +390,14 @@ impl ContainmentCoordinator {
         );
 
         if self.state == ContainmentState::Fuse {
-            self.refresh_fuse_timer(&event, now);
+            self.extend_fuse_timer(now);
+            let active_root = self.active_fuse_root.clone().unwrap_or(watched_root);
             return OperatorContainmentResult {
                 decision: None,
                 applied: true,
                 message: format!(
                     "fuse already active for {}; refreshed the fuse release timer",
-                    watched_root
+                    active_root
                 ),
             };
         }

@@ -439,12 +439,7 @@ fn snapd_protected_path_activity_stays_observed() {
     };
     let correlation = CorrelationResult {
         process: Some({
-            let mut proc = process(
-                103,
-                "snapd",
-                "/usr/lib/snapd/snapd",
-                "/usr/lib/snapd/snapd",
-            );
+            let mut proc = process(103, "snapd", "/usr/lib/snapd/snapd", "/usr/lib/snapd/snapd");
             proc.parent_process_name = Some("systemd".to_string());
             proc.parent_command_line = Some("systemd".to_string());
             proc.service_unit = Some("snapd.service".to_string());

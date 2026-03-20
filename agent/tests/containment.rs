@@ -8,10 +8,19 @@ use bannkenn_agent::{
 use chrono::{Duration, Utc};
 
 fn event(level: BehaviorLevel, score: u32, pid: Option<u32>) -> BehaviorEvent {
+    event_for_root(level, score, pid, "/srv/data")
+}
+
+fn event_for_root(
+    level: BehaviorLevel,
+    score: u32,
+    pid: Option<u32>,
+    watched_root: &str,
+) -> BehaviorEvent {
     BehaviorEvent {
         timestamp: Utc::now(),
         source: "test".to_string(),
-        watched_root: "/srv/data".to_string(),
+        watched_root: watched_root.to_string(),
         pid,
         parent_pid: Some(1),
         uid: Some(1000),
@@ -153,6 +162,75 @@ fn fuse_decay_waits_for_rate_limit_then_releases_to_throttle() {
             EnforcementAction::ApplyNetworkThrottle { .. }
         ]
     ));
+}
+
+#[test]
+fn fused_timer_refresh_keeps_original_suspend_target() {
+    let config = ContainmentConfig {
+        enabled: true,
+        throttle_enabled: true,
+        fuse_enabled: true,
+        auto_fuse_release_min: 0,
+        throttle_action_min_events: 1,
+        fuse_action_min_events: 1,
+        ..ContainmentConfig::default()
+    };
+    let start = Utc::now();
+    let mut coordinator = ContainmentCoordinator::new(&config);
+
+    let fuse = coordinator
+        .handle_event_at(
+            &event_for_root(
+                BehaviorLevel::ContainmentCandidate,
+                100,
+                Some(77),
+                "/srv/data",
+            ),
+            start,
+        )
+        .expect("fuse transition");
+    assert_eq!(fuse.state, ContainmentState::Fuse);
+    assert_eq!(
+        fuse.actions,
+        vec![EnforcementAction::SuspendProcess {
+            pid: 77,
+            watched_root: "/srv/data".to_string(),
+        }]
+    );
+
+    assert!(coordinator
+        .handle_event_at(
+            &event_for_root(
+                BehaviorLevel::ContainmentCandidate,
+                101,
+                Some(88),
+                "/srv/other",
+            ),
+            start + Duration::seconds(5),
+        )
+        .is_none());
+
+    let decay = coordinator
+        .tick_at(start + Duration::seconds(61))
+        .expect("decay transition");
+    assert_eq!(decay.state, ContainmentState::Throttle);
+    assert_eq!(
+        decay.actions,
+        vec![
+            EnforcementAction::ResumeProcess {
+                pid: 77,
+                watched_root: "/srv/data".to_string(),
+            },
+            EnforcementAction::ApplyIoThrottle {
+                pid: Some(77),
+                watched_root: "/srv/data".to_string(),
+            },
+            EnforcementAction::ApplyNetworkThrottle {
+                pid: Some(77),
+                watched_root: "/srv/data".to_string(),
+            },
+        ]
+    );
 }
 
 #[test]
