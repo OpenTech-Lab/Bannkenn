@@ -8,11 +8,16 @@
 - [x] Cap nested `parent_chain` string fields before behavior events are persisted or archived.
 - [x] Add regression tests for fuse-target stability and nested parent-chain caps.
 - [x] Run focused verification for the touched agent and server paths.
+- [x] Tighten SQLite schema migration `ALTER TABLE ... ADD COLUMN` handling so only duplicate-column cases are ignored.
+- [x] Add schema migration regression tests for duplicate-column idempotency and real failure propagation.
+- [x] Re-run focused server verification for the schema migration path.
 - Review:
   - Split fuse timer extension from fuse-target assignment so already-fused refreshes do not overwrite the suspended PID/root.
   - Added a containment regression proving a second containment-candidate on a different PID/root still resumes and throttles the original suspended process when fuse decays.
   - Added `cap_parent_chain(...)` plus shared optional-string capping in the behavior-event route so nested ancestry fields are truncated before persistence.
-  - Verification: `cargo fmt --all`, `cargo test -p bannkenn-agent --test containment`, `cargo test -p bannkenn-server cap_parent_chain`.
+  - Replaced blanket ignored `ALTER TABLE ... ADD COLUMN` results with an `add_column_if_missing(...)` helper that only suppresses SQLite duplicate-column errors and now surfaces real migration failures.
+  - Added schema migration tests proving duplicate-column retries remain idempotent while missing-table/real DDL failures still abort the migration.
+  - Verification: `cargo fmt --all`, `cargo test -p bannkenn-agent --test containment`, `cargo test -p bannkenn-server add_column_if_missing`, `cargo test -p bannkenn-server cap_parent_chain`.
 
 ## Immediate Fixes
 - [x] Stop repeated polling of `/var/log/auth.log` on hosts that use journald; prefer journal subscriptions and suppress missing-file warning spam.
