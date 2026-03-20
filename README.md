@@ -179,5 +179,11 @@ Alternatively, use the official [geoipupdate](https://github.com/maxmind/geoipup
 > GeoLite2 data is created by MaxMind and licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 > See `server/data/LICENSE` for the full attribution notice.
 
+## Review
+### coderabbitai
+```bash
+@coderabbitai review
+```
+
 ## License
 MIT
