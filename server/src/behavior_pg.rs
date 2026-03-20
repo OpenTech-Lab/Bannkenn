@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS behavior_events_archive (
     parent_command_line TEXT,
     container_runtime TEXT,
     container_id TEXT,
+    container_image TEXT,
     correlation_hits BIGINT NOT NULL,
     file_ops_created BIGINT NOT NULL,
     file_ops_modified BIGINT NOT NULL,
@@ -95,6 +96,7 @@ pub struct BehaviorArchiveRecord {
     pub parent_command_line: Option<String>,
     pub container_runtime: Option<String>,
     pub container_id: Option<String>,
+    pub container_image: Option<String>,
     pub correlation_hits: u32,
     pub file_ops_created: u32,
     pub file_ops_modified: u32,
@@ -142,6 +144,7 @@ impl BehaviorArchiveRecord {
             parent_command_line: event.parent_command_line.clone(),
             container_runtime: event.container_runtime.clone(),
             container_id: event.container_id.clone(),
+            container_image: event.container_image.clone(),
             correlation_hits: event.correlation_hits,
             file_ops_created: event.file_ops.created,
             file_ops_modified: event.file_ops.modified,
@@ -248,6 +251,11 @@ impl BehaviorPgArchive {
         )
         .execute(&self.pool)
         .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS container_image TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
         for statement in BEHAVIOR_ARCHIVE_INDEXES {
             sqlx::query(statement).execute(&self.pool).await?;
         }
@@ -282,6 +290,7 @@ impl BehaviorPgArchive {
                 parent_command_line,
                 container_runtime,
                 container_id,
+                container_image,
                 correlation_hits,
                 file_ops_created,
                 file_ops_modified,
@@ -299,7 +308,7 @@ impl BehaviorPgArchive {
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
                 $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-                $27, $28, $29, $30, $31, $32, $33, $34, $35, $36
+                $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37
             )
             ON CONFLICT (sqlite_event_id) DO NOTHING
             "#,
@@ -328,6 +337,7 @@ impl BehaviorPgArchive {
         .bind(&record.parent_command_line)
         .bind(&record.container_runtime)
         .bind(&record.container_id)
+        .bind(&record.container_image)
         .bind(i64::from(record.correlation_hits))
         .bind(i64::from(record.file_ops_created))
         .bind(i64::from(record.file_ops_modified))

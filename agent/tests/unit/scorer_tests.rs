@@ -47,6 +47,7 @@ fn process(pid: u32, process_name: &str, exe_path: &str, command_line: &str) -> 
         parent_chain: Vec::new(),
         container_runtime: None,
         container_id: None,
+        container_image: None,
     }
 }
 
@@ -90,6 +91,7 @@ fn mass_rename_scores_as_suspicious() {
             parent_chain: Vec::new(),
             container_runtime: None,
             container_id: None,
+            container_image: None,
         }),
         protected_hits: 0,
     };
@@ -506,11 +508,9 @@ fn overlapping_benign_contexts_do_not_double_subtract_the_same_components() {
     proc.maintenance_activity = Some(MaintenanceActivity::PackageManagerHelper);
 
     let adjustment = scorer.context_adjustment(
-        &batch,
         Some(&proc),
         ScoreComponents {
             protected_path: 0,
-            user_data: 0,
             rename: effective_burst_score(
                 batch.file_ops.renamed,
                 RENAME_BURST_GRACE,
@@ -526,6 +526,7 @@ fn overlapping_benign_contexts_do_not_double_subtract_the_same_components() {
                 as u32,
             directory_spread: 0,
         },
+        build_context_flags(&batch, Some(&proc)),
     );
 
     assert_eq!(
@@ -651,6 +652,100 @@ fn temp_exec_trigger_starts_at_suspicious_and_includes_mismatch_when_present() {
         .reasons
         .iter()
         .any(|reason| reason == "process name/executable mismatch"));
+}
+
+#[test]
+fn raw_score_only_rename_burst_is_downgraded_without_full_behavior_chain() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "userspace_polling".to_string(),
+        watched_root: "/srv/data".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            renamed: 20,
+            ..Default::default()
+        },
+        touched_paths: vec![
+            "/srv/data/customer/a.locked".to_string(),
+            "/srv/data/customer/b.locked".to_string(),
+        ],
+        protected_paths_touched: Vec::new(),
+        bytes_written: 0,
+        io_rate_bytes_per_sec: 0,
+    };
+    let correlation = CorrelationResult {
+        process: Some({
+            let mut proc = process(
+                601,
+                "python3",
+                "/usr/bin/python3",
+                "/usr/bin/python3 /srv/data/rename.py",
+            );
+            proc.trust_class = ProcessTrustClass::AllowedLocal;
+            proc
+        }),
+        protected_hits: 0,
+    };
+
+    let event = scorer.score(&batch, &correlation);
+
+    assert_eq!(event.level, BehaviorLevel::Suspicious);
+    assert!(
+        event.score >= 60,
+        "expected raw score pressure to remain high"
+    );
+    assert!(event.reasons.iter().any(|reason| {
+        reason == "insufficient correlated ransomware-style signals for high-risk escalation"
+    }));
+    assert!(event
+        .reasons
+        .iter()
+        .any(|reason| reason == "behavior chain signals: meaningful_rename, user_data_targeting"));
+}
+
+#[test]
+fn raw_fuse_score_without_extra_corroboration_is_held_at_throttle() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "userspace_polling".to_string(),
+        watched_root: "/srv/data".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 8,
+            renamed: 20,
+            ..Default::default()
+        },
+        touched_paths: vec!["/srv/data/customer/archive.enc".to_string()],
+        protected_paths_touched: Vec::new(),
+        bytes_written: 8 * 1_048_576,
+        io_rate_bytes_per_sec: 8 * 1_048_576,
+    };
+    let correlation = CorrelationResult {
+        process: Some(process(
+            602,
+            "python3",
+            "/usr/bin/python3",
+            "/usr/bin/python3 /srv/data/encrypt.py",
+        )),
+        protected_hits: 0,
+    };
+
+    let event = scorer.score(&batch, &correlation);
+
+    assert_eq!(event.level, BehaviorLevel::ThrottleCandidate);
+    assert!(
+        event.score >= 90,
+        "expected raw score pressure to hit fuse range"
+    );
+    assert!(event.reasons.iter().any(|reason| {
+        reason == "insufficient correlated ransomware-style signals for containment escalation"
+    }));
+    assert!(event.reasons.iter().any(|reason| {
+        reason
+            == "behavior chain signals: weak_identity, meaningful_rename, repeated_writes, user_data_targeting"
+    }));
 }
 
 #[test]

@@ -86,6 +86,8 @@ pub struct ProcessInfo {
     pub container_runtime: Option<String>,
     #[serde(default)]
     pub container_id: Option<String>,
+    #[serde(default)]
+    pub container_image: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -190,6 +192,8 @@ pub struct BehaviorEvent {
     pub parent_chain: Vec<ProcessAncestor>,
     pub container_runtime: Option<String>,
     pub container_id: Option<String>,
+    #[serde(default)]
+    pub container_image: Option<String>,
     pub correlation_hits: u32,
     pub file_ops: FileOperationCounts,
     pub touched_paths: Vec<String>,

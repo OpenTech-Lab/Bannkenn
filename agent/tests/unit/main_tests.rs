@@ -119,6 +119,7 @@ fn behavior_event(score: u32, reasons: &[&str]) -> BehaviorEvent {
         parent_chain: Vec::new(),
         container_runtime: None,
         container_id: None,
+        container_image: None,
         correlation_hits: 3,
         file_ops: FileOperationCounts {
             renamed: 4,

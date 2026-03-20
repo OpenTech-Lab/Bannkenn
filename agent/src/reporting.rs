@@ -27,6 +27,8 @@ pub struct BehaviorEventUpload {
     pub parent_chain: Vec<ProcessAncestor>,
     pub container_runtime: Option<String>,
     pub container_id: Option<String>,
+    #[serde(default)]
+    pub container_image: Option<String>,
     pub correlation_hits: u32,
     pub file_ops: FileOperationCounts,
     pub touched_paths: Vec<String>,
@@ -86,6 +88,7 @@ impl From<&BehaviorEvent> for BehaviorEventUpload {
             parent_chain: event.parent_chain.clone(),
             container_runtime: event.container_runtime.clone(),
             container_id: event.container_id.clone(),
+            container_image: event.container_image.clone(),
             correlation_hits: event.correlation_hits,
             file_ops: event.file_ops,
             touched_paths: event.touched_paths.clone(),

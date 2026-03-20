@@ -64,6 +64,7 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             parent_command_line TEXT,
             container_runtime TEXT,
             container_id TEXT,
+            container_image TEXT,
             correlation_hits INTEGER NOT NULL DEFAULT 0,
             file_ops_created INTEGER NOT NULL DEFAULT 0,
             file_ops_modified INTEGER NOT NULL DEFAULT 0,
@@ -460,6 +461,9 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
         .execute(pool)
         .await;
     let _ = sqlx::query("ALTER TABLE behavior_events ADD COLUMN container_id TEXT")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE behavior_events ADD COLUMN container_image TEXT")
         .execute(pool)
         .await;
     let _ = sqlx::query("ALTER TABLE containment_events ADD COLUMN incident_id INTEGER")

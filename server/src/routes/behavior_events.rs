@@ -41,6 +41,7 @@ pub struct CreateBehaviorEventRequest {
     pub parent_command_line: Option<String>,
     pub container_runtime: Option<String>,
     pub container_id: Option<String>,
+    pub container_image: Option<String>,
     pub correlation_hits: u32,
     pub file_ops: BehaviorFileOpsRow,
     #[serde(default)]
@@ -120,6 +121,9 @@ pub async fn create(
             .map(|s| cap_string(s, MAX_STRING_BYTES)),
         container_id: payload
             .container_id
+            .map(|s| cap_string(s, MAX_STRING_BYTES)),
+        container_image: payload
+            .container_image
             .map(|s| cap_string(s, MAX_STRING_BYTES)),
         correlation_hits: payload.correlation_hits,
         file_ops: payload.file_ops,

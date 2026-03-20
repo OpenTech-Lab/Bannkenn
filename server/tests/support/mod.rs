@@ -50,6 +50,7 @@ pub fn sample_behavior_event(
         parent_command_line: Some("systemd".to_string()),
         container_runtime: Some("docker".to_string()),
         container_id: Some("0123456789abcdef0123456789abcdef".to_string()),
+        container_image: Some("ghcr.io/acme/backup:1.2.3".to_string()),
         correlation_hits: 3,
         file_ops: BehaviorFileOpsRow {
             created: 1,

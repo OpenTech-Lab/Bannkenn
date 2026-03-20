@@ -62,6 +62,10 @@ async fn behavior_events_round_trip_structured_payloads() {
         rows[0].container_id.as_deref(),
         Some("0123456789abcdef0123456789abcdef")
     );
+    assert_eq!(
+        rows[0].container_image.as_deref(),
+        Some("ghcr.io/acme/backup:1.2.3")
+    );
     assert_eq!(rows[0].level, "throttle_candidate");
 
     let agent_rows = db

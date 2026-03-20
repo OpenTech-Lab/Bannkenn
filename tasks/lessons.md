@@ -193,6 +193,10 @@
 - If a phase summary calls out concrete remaining gaps, add them as explicit tasks in `tasks/todo.md` before picking the work back up.
 - Do not leave actionable follow-up only in prose or final-answer caveats; keep the repo task log aligned with the implementation queue.
 
+### "Keep going" work must re-check older open prerequisites before jumping to a later phase
+- If an earlier phase still has a concrete unfinished prerequisite, do not keep advancing a later phase just because newer work is available.
+- Before continuing implementation, scan `tasks/todo.md` for older unchecked items that block or weaken the later phase and either finish them first or state explicitly why they are deferred.
+
 ### Deferred runtime-validation caveats belong in optional tasks, not only in handoff text
 - If work is complete except for privileged/live-host validation, add that gap to the optional follow-up section in `tasks/todo.md`.
 - That keeps future execution work discoverable and avoids losing an important validation step in reply text alone.

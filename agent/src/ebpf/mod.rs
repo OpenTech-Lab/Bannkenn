@@ -900,6 +900,7 @@ fn process_info_from_tracked(
         parent_chain: process.parent_chain.clone(),
         container_runtime: process.container_runtime.clone(),
         container_id: process.container_id.clone(),
+        container_image: process.container_image.clone(),
     }
 }
 

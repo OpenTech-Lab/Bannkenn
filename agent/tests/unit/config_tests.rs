@@ -70,6 +70,10 @@ fn runtime_defaults_populate_containment_config_without_enabling_it() {
     assert_eq!(containment.shell_parent_bonus, 10);
     assert_eq!(containment.recent_process_bonus, 6);
     assert_eq!(containment.recent_process_window_secs, 600);
+    assert_eq!(containment.meaningful_rename_count, 8);
+    assert_eq!(containment.meaningful_write_count, 5);
+    assert_eq!(containment.high_risk_min_signals, 4);
+    assert_eq!(containment.containment_candidate_min_signals, 5);
     assert!(containment
         .protected_pid_allowlist
         .contains(&"bannkenn-agent".to_string()));
@@ -100,6 +104,7 @@ fn containment_trust_policy_round_trips() {
                 exe_paths: vec!["/usr/bin/rsync".to_string()],
                 package_names: vec!["rsync".to_string()],
                 service_units: vec!["backup.service".to_string()],
+                container_images: vec!["ghcr.io/acme/backup:1.2.3".to_string()],
                 trust_class: crate::ebpf::events::ProcessTrustClass::TrustedPackageManaged,
                 visibility: TrustPolicyVisibility::Hidden,
                 maintenance_windows: vec![MaintenanceWindow {
@@ -124,6 +129,7 @@ fn containment_trust_policy_round_trips() {
     assert_eq!(policy.exe_paths, vec!["/usr/bin/rsync"]);
     assert_eq!(policy.package_names, vec!["rsync"]);
     assert_eq!(policy.service_units, vec!["backup.service"]);
+    assert_eq!(policy.container_images, vec!["ghcr.io/acme/backup:1.2.3"]);
     assert_eq!(
         policy.trust_class,
         crate::ebpf::events::ProcessTrustClass::TrustedPackageManaged

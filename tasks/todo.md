@@ -26,9 +26,13 @@
   - [x] Carry optional package metadata alongside the ancestry chain in the behavior-event contract and dashboard detail view.
 - [x] Add service-unit, first-seen, and explicit trust-class metadata to process attribution and behavior events as the next step toward the identity profile.
 - [x] Introduce a trust model with clear classes such as trusted system process, trusted package-managed process, allowed local process, unknown process, and suspicious process.
-- [ ] Add a policy-driven allowlist/baseline layer keyed by executable path, package name, service unit, container image, and maintenance window.
+- [x] Add a policy-driven allowlist/baseline layer keyed by executable path, package name, service unit, container image, and maintenance window.
   - [x] Extend trust policy overrides to match package names in addition to executable paths, service units, and maintenance windows.
-  - [ ] Add container-image keyed trust/baseline matching once container image attribution exists.
+  - [x] Add container-image keyed trust/baseline matching once container image attribution exists.
+    - [x] Resolve best-effort container image names from tracked container runtime/container ID metadata during lifecycle attribution.
+    - [x] Allow trust policy overrides to match `container_images` in addition to executable paths, package names, and service units.
+    - [x] Persist `container_image` through the agent upload contract, server SQLite/Postgres storage, incident timeline payloads, and dashboard event details.
+    - [x] Add regression coverage for container image parsing, policy matching, and behavior-event round trips.
 - [x] Add agent-config trust policy overrides keyed by executable path and service unit, with optional maintenance windows and event visibility for the matched policy.
 - [x] Add explicit maintenance attribution for package-manager helper and trusted system/package-managed work, then use that metadata in scoring and dashboard event details.
 - [x] Identify package-manager and systemd-maintenance activity explicitly so protected-path changes can be downgraded when context is trustworthy.
@@ -40,8 +44,12 @@
   - [x] Expose the new weighted dimensions through containment scoring config defaults so the model stays tunable.
   - [x] Back the weighted scorer with regression coverage for benign maintenance/container cases and higher-confidence multi-signal suspicious cases.
 - [ ] Correlate low-level events into behavior chains instead of treating small isolated bursts as strong indicators by themselves.
+  - [x] Derive explicit behavior-chain signals from current telemetry such as meaningful rename bursts, repeated writes, user-data targeting, weak process trust, and suspicious lineage.
+  - [x] Gate high-risk containment-oriented levels on a minimum correlated signal count instead of raw score alone.
+  - [x] Emit operator-visible reasons when an event is downgraded because it lacks enough correlated ransomware-style signals.
 - [ ] Add severity bands such as observed, suspicious, high risk, and containment candidate with tunable environment profiles.
 - [ ] Require multi-signal correlation for ransomware-style alerts, including unknown process identity, meaningful rename bursts, repeated writes, and user/application data targeting without maintenance context.
+  - [x] Require the current scorer to see unknown/untrusted identity, meaningful rename pressure, repeated writes, and user/application data targeting before escalating to the highest levels when maintenance context is absent.
 
 ## Phase 4: Advanced Detection
 - [ ] Add entropy or unreadability indicators for rewritten files to improve ransomware confidence.
@@ -92,3 +100,13 @@
 - Regression coverage for this pass adds multi-signal weighted-scorer tests for user-data targeting, cross-directory spread, shell ancestry, and trusted-lineage score reduction, plus config-default assertions for the new knobs.
 - Verification for this pass: `cargo fmt --all`, `cargo test -p bannkenn-agent`, and `cargo clippy -p bannkenn-agent --tests -- -D warnings`.
 - Remaining gap under the parent scoring task: rename-extension anomaly and true recurrence/history scoring are still open, so the top-level weighted-scoring checkbox intentionally remains unchecked.
+- 2026-03-20: High-risk scorer escalation is now behavior-chain-aware. `throttle_candidate` and `fuse_candidate` require correlated ransomware-style evidence instead of score alone, using explicit chain signals for weak identity, meaningful rename pressure, repeated writes, user-data targeting, suspicious lineage, directory spread, and rapid deletes.
+- 2026-03-20: The scorer now emits operator-visible downgrade reasons when a raw high score lacks enough correlated signals, so high rename volume without repeated writes or untrusted identity stays visible but does not jump straight to higher containment-oriented levels.
+- `ContainmentConfig` now exposes the chain thresholds (`meaningful_rename_count`, `meaningful_write_count`, `high_risk_min_signals`, and `containment_candidate_min_signals`) so later severity-band/profile work can reuse explicit knobs.
+- Regression coverage for this pass adds scorer tests for score-only rename bursts being downgraded, raw fuse-range events being held at throttle without extra corroboration, and config-default assertions for the new chain thresholds.
+- Verification for this pass: `cargo fmt --all`, `cargo test -p bannkenn-agent`, and `cargo clippy -p bannkenn-agent --tests -- -D warnings`.
+- Remaining gap under correlation/scoring: this is still per-batch correlation, not true recurrence/history-based behavior chaining across multiple events, so the parent task stays open.
+- 2026-03-20: Lifecycle attribution now resolves best-effort `container_image` metadata from container runtime/container ID context, caches it per container identity, and uses image names in the process-profile key so repeated containers from the same image preserve baseline state.
+- 2026-03-20: Trust policy overrides now support `container_images`, and `container_image` flows through the agent outbox/upload contract, server SQLite/Postgres behavior storage, incident timeline payloads, and the dashboard behavior-event detail view.
+- Regression coverage for this pass adds lifecycle tests for Docker/CRI image parsing, Docker config prefix matching, container-image trust-policy matching, first-seen reuse across new container IDs for the same image, outbox/server/archive round-trips for `container_image`, and another dashboard production build.
+- Verification for this pass: `cargo fmt --all`, `cargo test -p bannkenn-agent`, `cargo test -p bannkenn-server`, `cargo clippy -p bannkenn-agent -p bannkenn-server --tests -- -D warnings`, and `npm run build` in `dashboard/`.

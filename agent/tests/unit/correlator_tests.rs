@@ -42,6 +42,7 @@ fn correlator_prefers_non_protected_process_with_exact_path_hits() {
                 parent_chain: Vec::new(),
                 container_runtime: None,
                 container_id: None,
+                container_image: None,
                 open_paths: HashSet::from(["/srv/data/file-a".to_string()]),
                 protected: true,
             },
@@ -66,6 +67,7 @@ fn correlator_prefers_non_protected_process_with_exact_path_hits() {
                 parent_chain: Vec::new(),
                 container_runtime: None,
                 container_id: None,
+                container_image: None,
                 open_paths: HashSet::from([
                     "/srv/data/file-a".to_string(),
                     "/srv/data/file-b".to_string(),

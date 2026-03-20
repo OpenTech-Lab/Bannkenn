@@ -2,6 +2,7 @@ use crate::config::{ContainmentConfig, TrustPolicyRule, TrustPolicyVisibility};
 use crate::ebpf::events::{MaintenanceActivity, ProcessAncestor, ProcessTrustClass};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -58,6 +59,7 @@ const SHELL_LIKE_PARENT_PATTERNS: &[&str] = &["sh", "bash", "dash", "zsh", "ash"
 const LOCAL_EXEC_PREFIXES: &[&str] = &["/usr/local/", "/opt/", "/srv/", "/home/", "/root/"];
 const TEMP_EXEC_PREFIXES: &[&str] = &["/tmp/", "/var/tmp/"];
 const MAX_PARENT_CHAIN_DEPTH: usize = 6;
+const DOCKER_CONTAINER_CONFIG_ROOT: &str = "/var/lib/docker/containers";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackedProcess {
@@ -81,6 +83,7 @@ pub struct TrackedProcess {
     pub parent_chain: Vec<ProcessAncestor>,
     pub container_runtime: Option<String>,
     pub container_id: Option<String>,
+    pub container_image: Option<String>,
     pub open_paths: HashSet<String>,
     pub protected: bool,
 }
@@ -111,6 +114,7 @@ pub struct ProcessLifecycleTracker {
     trust_policies: Vec<TrustPolicyRule>,
     previous: HashMap<u32, ProcessIdentity>,
     profiles: HashMap<String, ProcessProfileState>,
+    container_images: HashMap<String, Option<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,6 +168,7 @@ impl ProcessLifecycleTracker {
             trust_policies: config.trust_policies.clone(),
             previous: HashMap::new(),
             profiles: HashMap::new(),
+            container_images: HashMap::new(),
         }
     }
 
@@ -203,6 +208,12 @@ impl ProcessLifecycleTracker {
         now: DateTime<Utc>,
     ) {
         for process in processes.values_mut() {
+            if process.container_image.is_none() {
+                process.container_image = self.resolve_container_image(
+                    process.container_runtime.as_deref(),
+                    process.container_id.as_deref(),
+                );
+            }
             let profile_key = process_profile_key(process);
             let profile = self.profiles.entry(profile_key).or_insert_with(|| {
                 let package_owner = resolve_package_owner(&process.exe_path);
@@ -231,6 +242,27 @@ impl ProcessLifecycleTracker {
             }
             process.maintenance_activity = classify_maintenance_activity(process);
         }
+    }
+
+    fn resolve_container_image(
+        &mut self,
+        runtime: Option<&str>,
+        container_id: Option<&str>,
+    ) -> Option<String> {
+        let runtime = runtime
+            .map(normalize_command_name)
+            .filter(|value| !value.is_empty())?;
+        let container_id = container_id
+            .map(normalize_command_name)
+            .filter(|value| !value.is_empty())?;
+        let cache_key = format!("{runtime}:{container_id}");
+        if let Some(image) = self.container_images.get(&cache_key) {
+            return image.clone();
+        }
+
+        let resolved = resolve_container_image_uncached(&runtime, &container_id);
+        self.container_images.insert(cache_key, resolved.clone());
+        resolved
     }
 }
 
@@ -306,6 +338,7 @@ fn inspect_process(
         parent_chain,
         container_runtime: cgroup.container_runtime,
         container_id: cgroup.container_id,
+        container_image: None,
         open_paths,
         protected,
     })
@@ -506,13 +539,18 @@ fn process_profile_key(process: &TrackedProcess) -> String {
         .unwrap_or("-")
         .trim()
         .to_ascii_lowercase();
-    let container_id = process
-        .container_id
+    let container_identity = process
+        .container_image
         .as_deref()
-        .unwrap_or("-")
-        .trim()
-        .to_ascii_lowercase();
-    format!("{exe_path}|{service_unit}|{container_id}")
+        .map(|image| format!("image:{}", normalize_command_name(image)))
+        .or_else(|| {
+            process
+                .container_id
+                .as_deref()
+                .map(|id| format!("id:{}", normalize_command_name(id)))
+        })
+        .unwrap_or_else(|| "-".to_string());
+    format!("{exe_path}|{service_unit}|{container_identity}")
 }
 
 fn normalize_proc_target(target: &Path) -> String {
@@ -607,8 +645,12 @@ fn trust_policy_matches(
         && policy.package_names.iter().any(|package_name| {
             package_name_matches_policy(process.package_name.as_deref(), package_name)
         });
+    let container_image_match = !policy.container_images.is_empty()
+        && policy.container_images.iter().any(|container_image| {
+            container_image_matches_policy(process.container_image.as_deref(), container_image)
+        });
 
-    if !exe_match && !service_unit_match && !package_name_match {
+    if !exe_match && !service_unit_match && !package_name_match && !container_image_match {
         return false;
     }
 
@@ -763,6 +805,16 @@ fn package_name_matches_policy(package_name: Option<&str>, configured_value: &st
     !normalized.is_empty() && normalized == configured
 }
 
+fn container_image_matches_policy(container_image: Option<&str>, configured_value: &str) -> bool {
+    let Some(container_image) = container_image else {
+        return false;
+    };
+
+    let normalized = normalize_command_name(container_image);
+    let configured = normalize_command_name(configured_value);
+    !normalized.is_empty() && normalized == configured
+}
+
 fn normalize_command_name(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
@@ -819,6 +871,106 @@ fn resolve_package_owner(exe_path: &str) -> Option<PackageOwner> {
             "apk",
         )
     })
+}
+
+fn resolve_container_image_uncached(runtime: &str, container_id: &str) -> Option<String> {
+    match runtime {
+        "docker" => read_docker_container_image_from_root(
+            Path::new(DOCKER_CONTAINER_CONFIG_ROOT),
+            container_id,
+        )
+        .or_else(|| inspect_container_image("docker", container_id)),
+        "podman" => inspect_container_image("podman", container_id),
+        "containerd" => inspect_container_image("crictl", container_id)
+            .or_else(|| inspect_container_image("nerdctl", container_id)),
+        "kubernetes" | "crio" => inspect_container_image("crictl", container_id),
+        _ => None,
+    }
+}
+
+fn read_docker_container_image_from_root(root: &Path, container_id: &str) -> Option<String> {
+    let container_dir = docker_container_dir(root, container_id)?;
+    let content = fs::read_to_string(container_dir.join("config.v2.json")).ok()?;
+    parse_container_inspect_image(&content)
+}
+
+fn docker_container_dir(root: &Path, container_id: &str) -> Option<PathBuf> {
+    let exact = root.join(container_id);
+    if exact.is_dir() {
+        return Some(exact);
+    }
+
+    let normalized = normalize_command_name(container_id);
+    let matches = fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let file_type = entry.file_type().ok()?;
+            if !file_type.is_dir() {
+                return None;
+            }
+
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let lower = normalize_command_name(&name);
+            (lower.starts_with(&normalized) || normalized.starts_with(&lower))
+                .then_some(entry.path())
+        })
+        .collect::<Vec<_>>();
+
+    if matches.len() == 1 {
+        matches.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn inspect_container_image(program: &str, container_id: &str) -> Option<String> {
+    let output = Command::new(program)
+        .args(["inspect", container_id])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_container_inspect_image(&stdout)
+}
+
+fn parse_container_inspect_image(content: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(content).ok()?;
+    parse_container_inspect_image_value(&value)
+}
+
+fn parse_container_inspect_image_value(value: &Value) -> Option<String> {
+    if let Some(entries) = value.as_array() {
+        return entries.iter().find_map(parse_container_inspect_image_value);
+    }
+
+    for pointer in [
+        "/Config/Image",
+        "/ImageName",
+        "/status/image/image",
+        "/info/config/image/image",
+        "/status/imageRef",
+        "/Image",
+    ] {
+        if let Some(image) = value.pointer(pointer).and_then(Value::as_str) {
+            if let Some(normalized) = normalize_container_image(image) {
+                return Some(normalized);
+            }
+        }
+    }
+
+    None
+}
+
+fn normalize_container_image(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_matches('"');
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 fn query_package_owner(

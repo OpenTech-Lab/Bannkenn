@@ -32,6 +32,7 @@ fn event(level: BehaviorLevel, score: u32, pid: Option<u32>) -> BehaviorEvent {
         parent_chain: Vec::new(),
         container_runtime: None,
         container_id: None,
+        container_image: None,
         correlation_hits: 10,
         file_ops: FileOperationCounts {
             modified: 1,

@@ -59,6 +59,10 @@ fn archive_record_preserves_ingested_behavior_fields() {
         record.container_id.as_deref(),
         Some("0123456789abcdef0123456789abcdef")
     );
+    assert_eq!(
+        record.container_image.as_deref(),
+        Some("ghcr.io/acme/backup:1.2.3")
+    );
     assert_eq!(record.level, "fuse_candidate");
     assert!(record.reasons_json.contains("rename burst x4"));
 }

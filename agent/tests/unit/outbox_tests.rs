@@ -124,6 +124,7 @@ fn outbox_round_trips_behavior_and_containment_reports() {
                 io_rate_bytes_per_sec: 2048,
                 container_runtime: Some("docker".to_string()),
                 container_id: Some("0123456789abcdef0123456789abcdef".to_string()),
+                container_image: Some("ghcr.io/acme/backup:1.2.3".to_string()),
                 score: 61,
                 reasons: vec!["rename burst".to_string()],
                 level: "throttle_candidate".to_string(),
@@ -166,6 +167,10 @@ fn outbox_round_trips_behavior_and_containment_reports() {
                 Some("trusted_maintenance")
             );
             assert_eq!(report.parent_chain.len(), 1);
+            assert_eq!(
+                report.container_image.as_deref(),
+                Some("ghcr.io/acme/backup:1.2.3")
+            );
         }
         payload => panic!("expected behavior event payload, got {payload:?}"),
     }

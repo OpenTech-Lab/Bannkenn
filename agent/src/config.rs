@@ -88,6 +88,8 @@ pub struct TrustPolicyRule {
     pub package_names: Vec<String>,
     #[serde(default)]
     pub service_units: Vec<String>,
+    #[serde(default)]
+    pub container_images: Vec<String>,
     pub trust_class: ProcessTrustClass,
     #[serde(default)]
     pub visibility: TrustPolicyVisibility,
@@ -161,6 +163,14 @@ pub struct ContainmentConfig {
     pub recent_process_bonus: u32,
     #[serde(default = "default_recent_process_window_secs")]
     pub recent_process_window_secs: u64,
+    #[serde(default = "default_meaningful_rename_count")]
+    pub meaningful_rename_count: u32,
+    #[serde(default = "default_meaningful_write_count")]
+    pub meaningful_write_count: u32,
+    #[serde(default = "default_high_risk_min_signals")]
+    pub high_risk_min_signals: u32,
+    #[serde(default = "default_containment_candidate_min_signals")]
+    pub containment_candidate_min_signals: u32,
     #[serde(default = "default_bytes_per_score")]
     pub bytes_per_score: u64,
 }
@@ -200,6 +210,10 @@ impl Default for ContainmentConfig {
             shell_parent_bonus: default_shell_parent_bonus(),
             recent_process_bonus: default_recent_process_bonus(),
             recent_process_window_secs: default_recent_process_window_secs(),
+            meaningful_rename_count: default_meaningful_rename_count(),
+            meaningful_write_count: default_meaningful_write_count(),
+            high_risk_min_signals: default_high_risk_min_signals(),
+            containment_candidate_min_signals: default_containment_candidate_min_signals(),
             bytes_per_score: default_bytes_per_score(),
         }
     }
@@ -360,6 +374,22 @@ fn default_recent_process_bonus() -> u32 {
 
 fn default_recent_process_window_secs() -> u64 {
     600
+}
+
+fn default_meaningful_rename_count() -> u32 {
+    8
+}
+
+fn default_meaningful_write_count() -> u32 {
+    5
+}
+
+fn default_high_risk_min_signals() -> u32 {
+    4
+}
+
+fn default_containment_candidate_min_signals() -> u32 {
+    5
 }
 
 fn default_bytes_per_score() -> u64 {

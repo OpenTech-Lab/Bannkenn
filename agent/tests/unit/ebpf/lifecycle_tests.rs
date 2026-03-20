@@ -25,6 +25,7 @@ fn tracked_process(pid: u32, process_name: &str, exe_path: &str) -> TrackedProce
         parent_chain: Vec::new(),
         container_runtime: None,
         container_id: None,
+        container_image: None,
         open_paths: HashSet::from(["/srv/data/file.txt".to_string()]),
         protected: false,
     }
@@ -160,6 +161,7 @@ fn trust_policy_override_applies_matching_rule() {
             exe_paths: vec!["/usr/bin/python3".to_string()],
             package_names: vec!["python3-minimal".to_string()],
             service_units: vec!["backup.service".to_string()],
+            container_images: Vec::new(),
             trust_class: ProcessTrustClass::TrustedPackageManaged,
             visibility: TrustPolicyVisibility::Hidden,
             maintenance_windows: vec![MaintenanceWindow {
@@ -256,6 +258,7 @@ fn trust_policy_override_matches_package_name() {
             exe_paths: Vec::new(),
             package_names: vec!["python3-minimal".to_string()],
             service_units: Vec::new(),
+            container_images: Vec::new(),
             trust_class: ProcessTrustClass::AllowedLocal,
             visibility: TrustPolicyVisibility::Visible,
             maintenance_windows: Vec::new(),
@@ -277,6 +280,75 @@ fn trust_policy_override_matches_package_name() {
 }
 
 #[test]
+fn trust_policy_override_matches_container_image() {
+    let config = ContainmentConfig {
+        watch_paths: vec!["/srv/data".to_string()],
+        trust_policies: vec![TrustPolicyRule {
+            name: "backup-container".to_string(),
+            exe_paths: Vec::new(),
+            package_names: Vec::new(),
+            service_units: Vec::new(),
+            container_images: vec!["ghcr.io/acme/backup:1.2.3".to_string()],
+            trust_class: ProcessTrustClass::TrustedPackageManaged,
+            visibility: TrustPolicyVisibility::Visible,
+            maintenance_windows: Vec::new(),
+        }],
+        ..ContainmentConfig::default()
+    };
+    let mut tracker = ProcessLifecycleTracker::new(&config);
+    let now = chrono::Utc::now();
+    let mut process = tracked_process(42, "backupd", "/usr/local/bin/backupd");
+    process.container_runtime = Some("docker".to_string());
+    process.container_id = Some("0123456789abcdef0123456789abcdef".to_string());
+    process.container_image = Some("ghcr.io/acme/backup:1.2.3".to_string());
+
+    let mut processes = HashMap::from([(42, process)]);
+    tracker.apply_profile_metadata(&mut processes, now);
+
+    let process = processes.get(&42).expect("tracked process");
+    assert_eq!(
+        process.trust_class,
+        ProcessTrustClass::TrustedPackageManaged
+    );
+    assert_eq!(
+        process.trust_policy_name.as_deref(),
+        Some("backup-container")
+    );
+}
+
+#[test]
+fn process_profiles_reuse_first_seen_for_same_container_image() {
+    let config = ContainmentConfig {
+        watch_paths: vec!["/srv/data".to_string()],
+        ..ContainmentConfig::default()
+    };
+    let mut tracker = ProcessLifecycleTracker::new(&config);
+    let first_seen = chrono::Utc::now();
+    let mut first = tracked_process(10, "backupd", "/usr/local/bin/backupd");
+    first.container_runtime = Some("docker".to_string());
+    first.container_id = Some("0123456789abcdef0123456789abcdef".to_string());
+    first.container_image = Some("ghcr.io/acme/backup:1.2.3".to_string());
+
+    let mut initial = HashMap::from([(10, first)]);
+    tracker.apply_profile_metadata(&mut initial, first_seen);
+
+    let initial_seen_at = initial.get(&10).expect("tracked process").first_seen_at;
+
+    let mut second = tracked_process(11, "backupd", "/usr/local/bin/backupd");
+    second.container_runtime = Some("docker".to_string());
+    second.container_id = Some("fedcba9876543210fedcba9876543210".to_string());
+    second.container_image = Some("ghcr.io/acme/backup:1.2.3".to_string());
+
+    let mut next = HashMap::from([(11, second)]);
+    tracker.apply_profile_metadata(&mut next, first_seen + chrono::Duration::minutes(5));
+
+    assert_eq!(
+        next.get(&11).expect("tracked process").first_seen_at,
+        initial_seen_at
+    );
+}
+
+#[test]
 fn package_owner_parsers_extract_expected_names() {
     assert_eq!(
         parse_dpkg_owner_output("python3-minimal: /usr/bin/python3\n").as_deref(),
@@ -294,6 +366,40 @@ fn package_owner_parsers_extract_expected_names() {
         parse_apk_owner_output("/bin/busybox is owned by busybox-1.36.1-r20\n").as_deref(),
         Some("busybox-1.36.1-r20")
     );
+}
+
+#[test]
+fn parse_container_inspect_image_reads_known_layouts() {
+    let docker_inspect = r#"[{"Config":{"Image":"ghcr.io/acme/backup:1.2.3"}}]"#;
+    assert_eq!(
+        parse_container_inspect_image(docker_inspect).as_deref(),
+        Some("ghcr.io/acme/backup:1.2.3")
+    );
+
+    let crictl_inspect = r#"{"status":{"image":{"image":"registry.k8s.io/pause:3.9"}}}"#;
+    assert_eq!(
+        parse_container_inspect_image(crictl_inspect).as_deref(),
+        Some("registry.k8s.io/pause:3.9")
+    );
+}
+
+#[test]
+fn read_docker_container_image_matches_container_id_prefix() {
+    let root =
+        std::env::temp_dir().join(format!("bannkenn-docker-config-{}", uuid::Uuid::new_v4()));
+    let container_id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let container_dir = root.join(container_id);
+    fs::create_dir_all(&container_dir).unwrap();
+    fs::write(
+        container_dir.join("config.v2.json"),
+        r#"{"Config":{"Image":"ghcr.io/acme/backup:1.2.3"}}"#,
+    )
+    .unwrap();
+
+    let resolved = read_docker_container_image_from_root(&root, "0123456789abcdef");
+    assert_eq!(resolved.as_deref(), Some("ghcr.io/acme/backup:1.2.3"));
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

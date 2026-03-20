@@ -52,6 +52,7 @@ export type BehaviorEvent = {
   parent_command_line?: string | null;
   container_runtime?: string | null;
   container_id?: string | null;
+  container_image?: string | null;
   correlation_hits: number;
   file_ops: BehaviorFileOps;
   touched_paths: string[];

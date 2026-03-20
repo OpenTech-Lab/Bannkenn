@@ -532,7 +532,12 @@ export function AgentDetailPage() {
                                   container:{' '}
                                   {event.container_runtime && event.container_id
                                     ? `${event.container_runtime}:${event.container_id}`
-                                    : 'host'}
+                                    : event.container_image
+                                      ? 'runtime unknown'
+                                      : 'host'}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  image: {event.container_image ?? 'unknown'}
                                 </p>
                               </div>
                             </TableCell>
